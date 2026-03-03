@@ -11,14 +11,11 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from jinja2 import Environment, FileSystemLoader
-
 from src.config import settings
 
 logger = logging.getLogger(__name__)
 
 REPORTS_DIR = Path(__file__).parent.parent.parent / "reports"
-TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
 
 def generate_report_id(startup_name: str, timestamp: str | None = None) -> str:
