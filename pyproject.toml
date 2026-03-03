@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
 [project]
 name = "mckoutie"
 version = "0.1.0"
@@ -24,3 +28,6 @@ dev = ["ruff", "pytest", "pytest-asyncio"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.setuptools]
+py-modules = []

@@ -8,9 +8,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi-dev libcairo2 && \
     rm -rf /var/lib/apt/lists/*
 
+# Install Python deps (layer cached separately from source code)
 COPY pyproject.toml .
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir pip setuptools wheel && \
+    pip install --no-cache-dir $(python -c "
+import tomllib
+with open('pyproject.toml', 'rb') as f:
+    data = tomllib.load(f)
+deps = data.get('project', {}).get('dependencies', [])
+print(' '.join(deps))
+")
 
+# Copy source code
 COPY . .
 
 # Create reports dir
