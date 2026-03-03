@@ -32,7 +32,7 @@ async def scrape_website(url: str) -> dict:
     if not url.startswith("http"):
         url = "https://" + url
 
-    # Try each scraper in order
+    # Try each direct scraper in order
     for scraper_fn in [_scrape_firecrawl, _scrape_exa, _scrape_jina, _scrape_raw]:
         try:
             result = await scraper_fn(url)
@@ -42,6 +42,17 @@ async def scrape_website(url: str) -> dict:
         except Exception as e:
             logger.warning(f"{scraper_fn.__name__} failed for {url}: {e}")
             continue
+
+    # All direct scrapers failed (likely a SPA/JS-heavy site).
+    # Try Exa semantic search to find content ABOUT the site.
+    logger.info(f"Direct scraping failed for {url} — trying Exa search fallback")
+    try:
+        result = await _search_exa_about(url)
+        if result and result.get("content") and len(result["content"]) > 100:
+            result["url"] = url
+            return result
+    except Exception as e:
+        logger.warning(f"Exa search fallback also failed for {url}: {e}")
 
     return {
         "url": url,
@@ -179,6 +190,78 @@ async def _scrape_raw(url: str) -> dict | None:
             "content": content,
             "links": _extract_links(html),
             "source": "raw",
+        }
+
+
+async def _search_exa_about(url: str) -> dict | None:
+    """Search Exa for content ABOUT a website when direct scraping fails (SPAs etc.)."""
+    if not settings.exa_api_key:
+        return None
+
+    # Extract domain name for search query
+    domain = re.sub(r"https?://", "", url).split("/")[0].replace("www.", "")
+    search_query = domain.split(".")[0]  # e.g. "vibelife" from "vibelife.sh"
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://api.exa.ai/search",
+            headers={
+                "x-api-key": settings.exa_api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "query": f"{search_query} startup product",
+                "numResults": 5,
+                "text": True,
+                "includeDomains": [domain],
+                "type": "keyword",
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        results = data.get("results", [])
+        if not results:
+            # Try broader search without domain filter
+            resp2 = await client.post(
+                "https://api.exa.ai/search",
+                headers={
+                    "x-api-key": settings.exa_api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "query": f"what is {search_query} {domain}",
+                    "numResults": 5,
+                    "text": True,
+                    "type": "auto",
+                },
+            )
+            resp2.raise_for_status()
+            data = resp2.json()
+            results = data.get("results", [])
+
+        if not results:
+            return None
+
+        # Combine all results into one content blob
+        parts = []
+        title = ""
+        for r in results:
+            if not title and r.get("title"):
+                title = r["title"]
+            text = r.get("text", "")
+            if text:
+                parts.append(f"Source: {r.get('url', 'unknown')}\n{text[:3000]}")
+
+        combined = "\n\n---\n\n".join(parts)
+        logger.info(f"Exa search fallback found {len(results)} results, {len(combined)} chars")
+
+        return {
+            "title": title,
+            "description": f"Content gathered via search about {domain}",
+            "content": combined,
+            "links": [r.get("url", "") for r in results if r.get("url")],
+            "source": "exa-search",
         }
 
 

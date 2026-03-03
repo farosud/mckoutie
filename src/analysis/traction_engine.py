@@ -1,14 +1,18 @@
 """
-Traction analysis engine — runs the full 19-channel analysis via Claude.
+Traction analysis engine — runs the full 19-channel analysis via LLM.
 
-This is the core intelligence. Takes raw startup data (website content + twitter)
-and produces a structured McKinsey-style consulting brief.
+Supports: Anthropic (direct) → OpenRouter (fallback).
+Takes raw startup data (website content + twitter) and produces
+a structured McKinsey-style consulting brief.
 """
 
+import asyncio
 import json
 import logging
+import re
 
 import anthropic
+import httpx
 
 from src.config import settings
 
@@ -158,23 +162,10 @@ Be specific enough that they can execute on day 1 without further research.
 """
 
 
-async def run_traction_analysis(startup_data: str) -> dict:
-    """
-    Run the full 19-channel traction analysis.
-
-    Args:
-        startup_data: Compiled text about the startup (website + twitter + any other intel)
-
-    Returns:
-        Structured analysis dict matching the JSON schema above.
-    """
+async def _call_anthropic(prompt: str) -> str:
+    """Call Anthropic API directly."""
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
-    prompt = ANALYSIS_PROMPT.format(startup_data=startup_data)
-
-    logger.info("Running traction analysis via Claude...")
-
-    # Retry up to 3 times on transient failures
     last_error = None
     for attempt in range(3):
         try:
@@ -184,36 +175,65 @@ async def run_traction_analysis(startup_data: str) -> dict:
                 system=ANALYSIS_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )
-            break
+            return response.content[0].text
         except anthropic.RateLimitError:
             last_error = "rate limited"
-            logger.warning(f"Rate limited on attempt {attempt + 1}/3, waiting 10s...")
-            import asyncio
+            logger.warning(f"Anthropic rate limited on attempt {attempt + 1}/3, waiting 10s...")
             await asyncio.sleep(10)
         except anthropic.APITimeoutError:
             last_error = "timeout"
-            logger.warning(f"Timeout on attempt {attempt + 1}/3, retrying...")
+            logger.warning(f"Anthropic timeout on attempt {attempt + 1}/3, retrying...")
         except anthropic.APIError as e:
             last_error = str(e)
-            logger.warning(f"API error on attempt {attempt + 1}/3: {e}")
-            import asyncio
+            logger.warning(f"Anthropic API error on attempt {attempt + 1}/3: {e}")
             await asyncio.sleep(3)
-    else:
-        logger.error(f"All 3 attempts failed: {last_error}")
-        return {"error": f"Claude API failed after 3 attempts: {last_error}"}
 
-    # Extract JSON from response
-    text = response.content[0].text
+    raise RuntimeError(f"Anthropic API failed after 3 attempts: {last_error}")
 
-    # Try to parse JSON directly
+
+async def _call_openrouter(prompt: str) -> str:
+    """Call OpenRouter API (supports Claude, GPT, etc.)."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.openrouter_api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://mckoutie.com",
+                        "X-Title": "mckoutie",
+                    },
+                    json={
+                        "model": "anthropic/claude-sonnet-4",
+                        "max_tokens": settings.analysis_max_tokens,
+                        "messages": [
+                            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"OpenRouter error on attempt {attempt + 1}/3: {e}")
+            await asyncio.sleep(3)
+
+    raise RuntimeError(f"OpenRouter API failed after 3 attempts: {last_error}")
+
+
+def _parse_json_response(text: str) -> dict:
+    """Extract JSON from LLM response text, handling various formats."""
+    # Try direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Try to extract JSON from markdown code block
-    import re
-
+    # Try markdown code block
     json_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
     if json_match:
         try:
@@ -221,7 +241,7 @@ async def run_traction_analysis(startup_data: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # Last resort — find the first { to last }
+    # Last resort — find first { to last }
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1:
@@ -230,5 +250,44 @@ async def run_traction_analysis(startup_data: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    logger.error("Failed to parse analysis response as JSON")
     return {"error": "Failed to parse analysis", "raw_response": text[:2000]}
+
+
+async def run_traction_analysis(startup_data: str) -> dict:
+    """
+    Run the full 19-channel traction analysis.
+
+    Tries Anthropic first, falls back to OpenRouter.
+
+    Args:
+        startup_data: Compiled text about the startup (website + twitter + any other intel)
+
+    Returns:
+        Structured analysis dict matching the JSON schema above.
+    """
+    prompt = ANALYSIS_PROMPT.format(startup_data=startup_data)
+    text = None
+
+    # Try Anthropic first
+    if settings.anthropic_api_key:
+        logger.info("Running traction analysis via Anthropic Claude...")
+        try:
+            text = await _call_anthropic(prompt)
+        except RuntimeError as e:
+            logger.warning(f"Anthropic failed: {e}")
+            if settings.openrouter_api_key:
+                logger.info("Falling back to OpenRouter...")
+
+    # Fall back to OpenRouter
+    if text is None and settings.openrouter_api_key:
+        logger.info("Running traction analysis via OpenRouter...")
+        try:
+            text = await _call_openrouter(prompt)
+        except RuntimeError as e:
+            logger.error(f"OpenRouter also failed: {e}")
+            return {"error": f"All LLM providers failed: {e}"}
+
+    if text is None:
+        return {"error": "No LLM provider available (set ANTHROPIC_API_KEY or OPENROUTER_API_KEY)"}
+
+    return _parse_json_response(text)

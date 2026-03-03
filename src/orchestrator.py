@@ -27,7 +27,6 @@ from src.analysis.report_generator import (
     generate_report_id,
     generate_teaser_thread,
     generate_full_report_markdown,
-    generate_report_html,
     save_report,
 )
 
@@ -72,13 +71,16 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
     )
     save_record(record)
 
-    # 2. Acknowledge the request on Twitter
-    ack_text = (
-        f"On it, @{request.author_username}. "
-        f"Running full 19-channel traction analysis on {request.target_display}.\n\n"
-        f"This takes about 60 seconds. Thread incoming."
-    )
-    poller.reply_to_tweet(request.tweet_id, ack_text)
+    # 2. Acknowledge the request on Twitter (if we can write)
+    if settings.has_twitter_write:
+        ack_text = (
+            f"On it, @{request.author_username}. "
+            f"Running full 19-channel traction analysis on {request.target_display}.\n\n"
+            f"This takes about 60 seconds. Thread incoming."
+        )
+        poller.reply_to_tweet(request.tweet_id, ack_text)
+    else:
+        logger.info("Twitter write disabled — skipping acknowledgment tweet")
 
     try:
         # 3. Gather intelligence
@@ -103,23 +105,27 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
         full_markdown = generate_full_report_markdown(analysis)
         save_report(report_id, analysis, full_markdown)
 
-        # 6. Create Stripe checkout session
-        checkout_url = create_checkout_session(
-            report_id=report_id,
-            startup_name=startup_name,
-            tweet_author=request.author_username,
-        )
-
+        # 6. Create Stripe checkout session (or skip if no Stripe)
         report_url = f"{settings.app_url}/report/{report_id}"
+        checkout_url = None
+
+        if settings.has_payments:
+            checkout_url = create_checkout_session(
+                report_id=report_id,
+                startup_name=startup_name,
+                tweet_author=request.author_username,
+            )
 
         # 7. Fill in payment link in the last teaser tweet
-        if teaser_tweets and checkout_url:
-            teaser_tweets[-1] = teaser_tweets[-1].replace("{payment_link}", checkout_url)
-        elif teaser_tweets:
-            teaser_tweets[-1] = teaser_tweets[-1].replace("{payment_link}", report_url)
+        link = checkout_url or report_url
+        if teaser_tweets:
+            teaser_tweets[-1] = teaser_tweets[-1].replace("{payment_link}", link)
 
-        # 8. Post teaser thread on Twitter
-        _post_teaser_thread(poller, request.tweet_id, teaser_tweets)
+        # 8. Post teaser thread on Twitter (if we can write)
+        if settings.has_twitter_write:
+            _post_teaser_thread(poller, request.tweet_id, teaser_tweets)
+        else:
+            logger.info("Twitter write disabled — teaser thread saved but not posted")
 
         # 9. Update report status to ready
         update_status(
@@ -136,12 +142,13 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
         logger.error(f"Failed to process request {request.tweet_id}: {e}")
         update_status(report_id, "failed", error=str(e))
 
-        # Notify the user on Twitter
-        error_text = (
-            f"Sorry @{request.author_username}, I hit an issue analyzing {request.target_display}. "
-            f"I'll look into it. Try again in a few minutes."
-        )
-        poller.reply_to_tweet(request.tweet_id, error_text)
+        # Notify the user on Twitter (if we can write)
+        if settings.has_twitter_write:
+            error_text = (
+                f"Sorry @{request.author_username}, I hit an issue analyzing {request.target_display}. "
+                f"I'll look into it. Try again in a few minutes."
+            )
+            poller.reply_to_tweet(request.tweet_id, error_text)
         return None
 
 

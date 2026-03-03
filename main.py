@@ -68,34 +68,35 @@ async def poll_loop(poller: TwitterPoller):
 
 
 def _validate_config():
-    """Check that we have the minimum required configuration."""
+    """Check configuration and report status. Returns warnings instead of exiting."""
+    warnings = []
     errors = []
 
-    if not settings.twitter_bearer_token:
-        errors.append("TWITTER_BEARER_TOKEN is required")
-    if not settings.twitter_api_key:
-        errors.append("TWITTER_API_KEY is required")
-    if not settings.twitter_api_secret:
-        errors.append("TWITTER_API_SECRET is required")
-    if not settings.twitter_access_token:
-        errors.append("TWITTER_ACCESS_TOKEN is required")
-    if not settings.twitter_access_token_secret:
-        errors.append("TWITTER_ACCESS_TOKEN_SECRET is required")
-    if not settings.anthropic_api_key:
-        errors.append("ANTHROPIC_API_KEY is required")
-    if not settings.stripe_secret_key:
-        errors.append("STRIPE_SECRET_KEY is required")
+    if not settings.has_llm:
+        errors.append("No LLM configured (need ANTHROPIC_API_KEY or OPENROUTER_API_KEY)")
 
-    # At least one scraping service
-    if not (settings.exa_api_key or settings.firecrawl_api_key):
-        errors.append("At least one of EXA_API_KEY or FIRECRAWL_API_KEY is required")
+    if not settings.has_scraping:
+        warnings.append("No scraping service (EXA_API_KEY or FIRECRAWL_API_KEY) — will use Jina/raw fallback")
+
+    if not settings.has_twitter_read:
+        warnings.append("No TWITTER_BEARER_TOKEN — Twitter polling disabled")
+    elif not settings.has_twitter_write:
+        warnings.append("Missing Twitter OAuth keys — can read mentions but can't reply")
+
+    if not settings.has_payments:
+        warnings.append("No STRIPE_SECRET_KEY — payments disabled, reports will be free")
 
     if errors:
-        logger.error("Configuration errors:")
+        logger.error("Fatal configuration errors:")
         for e in errors:
-            logger.error(f"  - {e}")
+            logger.error(f"  ✗ {e}")
         logger.error("Copy .env.example to .env and fill in the values")
         sys.exit(1)
+
+    if warnings:
+        logger.warning("Configuration warnings (running in degraded mode):")
+        for w in warnings:
+            logger.warning(f"  ⚠ {w}")
 
 
 async def run_server():
@@ -112,7 +113,7 @@ async def run_server():
 
 
 async def main():
-    """Start everything: web server + polling loop."""
+    """Start everything: web server + polling loop (if Twitter configured)."""
     _validate_config()
 
     logger.info("=" * 60)
@@ -121,21 +122,27 @@ async def main():
     logger.info(f"  Bot:      @{settings.bot_username}")
     logger.info(f"  Price:    ${settings.report_price_usd}/report")
     logger.info(f"  URL:      {settings.app_url}")
-    logger.info(f"  Polling:  every {settings.poll_interval_seconds}s")
+    logger.info(f"  Twitter:  {'read+write' if settings.has_twitter_write else 'read-only' if settings.has_twitter_read else 'DISABLED'}")
+    logger.info(f"  LLM:      {'Anthropic' if settings.anthropic_api_key else 'OpenRouter' if settings.openrouter_api_key else 'NONE'}")
+    logger.info(f"  Payments: {'Stripe' if settings.has_payments else 'DISABLED (free reports)'}")
+    logger.info(f"  Scraping: {'Exa' if settings.exa_api_key else ''} {'Firecrawl' if settings.firecrawl_api_key else ''} {'(+Jina fallback)' if not settings.exa_api_key and not settings.firecrawl_api_key else ''}")
     logger.info("=" * 60)
-
-    poller = TwitterPoller()
 
     # Handle graceful shutdown
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda: _shutdown.set())
 
-    # Run web server and polling loop concurrently
-    await asyncio.gather(
-        run_server(),
-        poll_loop(poller),
-    )
+    tasks = [run_server()]
+
+    if settings.has_twitter_read:
+        poller = TwitterPoller()
+        tasks.append(poll_loop(poller))
+        logger.info(f"  Polling:  every {settings.poll_interval_seconds}s")
+    else:
+        logger.warning("Twitter polling DISABLED — use CLI mode: python main.py analyze <url>")
+
+    await asyncio.gather(*tasks)
 
 
 # --- CLI mode: analyze a single URL without Twitter ---
