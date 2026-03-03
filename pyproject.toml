@@ -1,0 +1,26 @@
+[project]
+name = "mckoutie"
+version = "0.1.0"
+description = "AI startup consulting bot — McKinsey at home"
+requires-python = ">=3.11"
+dependencies = [
+    "tweepy>=4.14",
+    "anthropic>=0.40",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "httpx>=0.27",
+    "stripe>=11",
+    "jinja2>=3.1",
+    "markdown>=3.7",
+    "python-dotenv>=1.0",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "weasyprint>=62",
+]
+
+[project.optional-dependencies]
+dev = ["ruff", "pytest", "pytest-asyncio"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
