@@ -21,11 +21,12 @@ logger = logging.getLogger(__name__)
 
 # Patterns to detect the request
 TRIGGER_PATTERNS = [
-    r"analy[sz]e\s+my\s+startup",
-    r"roast\s+my\s+startup",
-    r"review\s+my\s+startup",
-    r"check\s+my\s+startup",
+    r"analy[sz]e\s+my\s+(startup|project|company|business|site|product|app|idea)",
+    r"roast\s+my\s+(startup|project|company|business|site|product|app|idea)",
+    r"review\s+my\s+(startup|project|company|business|site|product|app|idea)",
+    r"check\s+my\s+(startup|project|company|business|site|product|app|idea)",
     r"consult\s+on",
+    r"@mckoutie\s+https?://",  # just tagging with a URL is enough intent
 ]
 
 # Extract URL or @username from tweet text
