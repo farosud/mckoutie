@@ -240,31 +240,69 @@ async def generate_capybara_image(
 
             data = response.json()
 
-            # Extract image from response
+            # Extract image from response — handle multiple formats
             choices = data.get("choices", [])
             if not choices:
                 logger.error("No choices in OpenRouter response")
                 return None
 
-            content = choices[0].get("message", {}).get("content", [])
-            if isinstance(content, str):
-                logger.error("Got text response instead of image — model may not support image gen")
+            message = choices[0].get("message")
+            if not message or not isinstance(message, dict):
+                logger.error(f"No message in choices[0]: {choices[0]}")
                 return None
 
-            # Look for image part in multimodal response
-            for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "image_url":
-                        image_url = part.get("image_url", {}).get("url", "")
-                        if image_url.startswith("data:image"):
-                            return _save_base64_image(image_url)
-                    elif part.get("type") == "image":
-                        # Some models return inline base64
+            content = message.get("content")
+
+            # Handle None content explicitly
+            if content is None:
+                logger.error(f"Got None content. Full response keys: {list(data.keys())}, message keys: {list(message.keys())}")
+                return None
+
+            # String content — could be base64 data URL or text
+            if isinstance(content, str):
+                if content.startswith("data:image"):
+                    return _save_base64_image(content)
+                # Check if it's raw base64 (no data: prefix)
+                if len(content) > 1000 and not content.startswith(("{", "[", "http")):
+                    try:
+                        return _save_raw_base64(content)
+                    except Exception:
+                        pass
+                logger.error(f"Got text response instead of image (first 200 chars): {content[:200]}")
+                return None
+
+            # List/array content — multimodal response
+            if isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    part_type = part.get("type", "")
+                    # image_url format
+                    if part_type == "image_url":
+                        img_url_obj = part.get("image_url")
+                        if isinstance(img_url_obj, dict):
+                            url = img_url_obj.get("url", "")
+                        elif isinstance(img_url_obj, str):
+                            url = img_url_obj
+                        else:
+                            continue
+                        if url.startswith("data:image"):
+                            return _save_base64_image(url)
+                    # image format (inline base64)
+                    elif part_type == "image":
                         b64_data = part.get("data") or part.get("image", "")
                         if b64_data:
                             return _save_raw_base64(b64_data)
+                    # text part with embedded base64
+                    elif part_type == "text":
+                        text = part.get("text", "")
+                        if text.startswith("data:image"):
+                            return _save_base64_image(text)
 
-            logger.warning("No image found in OpenRouter response")
+                logger.warning(f"No image found in multimodal response ({len(content)} parts)")
+                return None
+
+            logger.error(f"Unexpected content type: {type(content).__name__}")
             return None
 
     except Exception as e:

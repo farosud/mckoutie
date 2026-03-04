@@ -112,10 +112,10 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
             try:
                 return await asyncio.wait_for(
                     find_leads(startup_data, analysis),
-                    timeout=180,  # 3 min — LLM persona gen (~15-45s) + Exa searches (~15s each, 6 max)
+                    timeout=300,  # 5 min — Opus persona gen (~30-120s) + Exa searches (~15s each, 6 max)
                 )
             except asyncio.TimeoutError:
-                logger.error("[ORCHESTRATOR] Lead research timed out after 180s")
+                logger.error("[ORCHESTRATOR] Lead research timed out after 300s")
                 return {"personas": [], "leads": [], "_error": "timeout"}
             except Exception as e:
                 logger.error(f"[ORCHESTRATOR] Lead research failed: {e}", exc_info=True)
@@ -125,10 +125,10 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
             try:
                 return await asyncio.wait_for(
                     find_investors(startup_data, analysis),
-                    timeout=90,  # 90s — just Exa searches, no LLM needed (4 queries × 15s max)
+                    timeout=120,  # 2 min — Exa searches (6 queries × 15s max + retries)
                 )
             except asyncio.TimeoutError:
-                logger.error("[ORCHESTRATOR] Investor research timed out after 90s")
+                logger.error("[ORCHESTRATOR] Investor research timed out after 120s")
                 return {"competitors": [], "competitor_investors": [], "market_investors": [], "_error": "timeout"}
             except Exception as e:
                 logger.error(f"[ORCHESTRATOR] Investor research failed: {e}", exc_info=True)

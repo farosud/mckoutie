@@ -217,9 +217,10 @@ async def _call_vps_proxy(prompt: str) -> str:
     logger.info(f"VPS proxy: {url}, model: {settings.analysis_model}")
 
     last_error = None
-    for attempt in range(3):
+    for attempt in range(2):  # 2 attempts max — saves time on VPS failure
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            # 180s timeout — Opus generating 12K tokens of 19-channel JSON needs time
+            async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
                 resp = await client.post(
                     url,
                     headers={
@@ -239,7 +240,7 @@ async def _call_vps_proxy(prompt: str) -> str:
                 if resp.status_code != 200:
                     body = resp.text
                     logger.error(
-                        f"VPS proxy returned {resp.status_code} on attempt {attempt + 1}/3: {body[:1000]}"
+                        f"VPS proxy returned {resp.status_code} on attempt {attempt + 1}/2: {body[:1000]}"
                     )
                     last_error = f"HTTP {resp.status_code}: {body[:500]}"
                     await asyncio.sleep(3)
@@ -253,12 +254,20 @@ async def _call_vps_proxy(prompt: str) -> str:
                     raise ValueError("Empty response from VPS proxy")
 
                 return choices[0]["message"]["content"]
+        except httpx.TimeoutException as e:
+            last_error = f"timeout after 180s ({type(e).__name__})"
+            logger.warning(f"VPS proxy timeout on attempt {attempt + 1}/2: {last_error}")
+            await asyncio.sleep(3)
+        except httpx.ConnectError as e:
+            last_error = f"connect error: {e}"
+            logger.warning(f"VPS proxy connect error on attempt {attempt + 1}/2: {last_error}")
+            await asyncio.sleep(3)
         except Exception as e:
-            last_error = str(e)
-            logger.warning(f"VPS proxy error on attempt {attempt + 1}/3: {e}")
+            last_error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            logger.warning(f"VPS proxy error on attempt {attempt + 1}/2: {last_error}")
             await asyncio.sleep(3)
 
-    raise RuntimeError(f"VPS proxy failed after 3 attempts: {last_error}")
+    raise RuntimeError(f"VPS proxy failed after 2 attempts: {last_error}")
 
 
 async def _call_openrouter(prompt: str) -> str:

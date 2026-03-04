@@ -26,16 +26,16 @@ _EXA_SEMAPHORE = asyncio.Semaphore(3)
 # Exa typically responds in <2s; anything over 15s is hung
 _EXA_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
-# LLM timeout — 90s per attempt (Opus on VPS can be slow for structured output)
-_LLM_TIMEOUT = httpx.Timeout(90.0, connect=15.0)
+# LLM timeout — 120s per attempt (Opus needs more time for rich persona generation)
+_LLM_TIMEOUT = httpx.Timeout(120.0, connect=15.0)
 
-# Use a fast model for persona generation (structured JSON, doesn't need Opus)
-_PERSONA_MODEL = "google/gemini-2.5-flash"
-# Fallback to Claude if Gemini fails
-_PERSONA_MODEL_FALLBACK = "anthropic/claude-sonnet-4"
+# Use Opus for persona generation — richer, more nuanced personas
+_PERSONA_MODEL = "anthropic/claude-opus-4"
+# Fallback to Gemini Flash if Opus fails on OpenRouter
+_PERSONA_MODEL_FALLBACK = "google/gemini-2.5-flash"
 
-# Use Sonnet (not Opus) on VPS for persona gen — much faster, good enough for JSON
-_VPS_PERSONA_MODEL = "claude-sonnet-4-20250514"
+# Use Opus on VPS — same model as main analysis
+_VPS_PERSONA_MODEL = "claude-opus-4-20250918"
 
 
 async def find_leads(startup_data: str, analysis: dict) -> dict:
@@ -64,6 +64,12 @@ async def find_leads(startup_data: str, analysis: dict) -> dict:
     except Exception as e:
         logger.error(f"[LEADS] Persona generation failed entirely: {e}", exc_info=True)
 
+    # Phase 1b: Fallback — if LLM failed, build simple personas from company profile
+    if not personas:
+        logger.warning("[LEADS] LLM personas empty — building fallback personas from profile")
+        personas = _build_fallback_personas(profile, market, one_liner)
+        logger.info(f"[LEADS] Built {len(personas)} fallback personas")
+
     # Phase 2: Find real leads via Exa
     leads = []
     if not settings.exa_api_key:
@@ -81,6 +87,96 @@ async def find_leads(startup_data: str, analysis: dict) -> dict:
         "personas": personas,
         "leads": leads,
     }
+
+
+def _build_fallback_personas(profile: dict, market: str, one_liner: str) -> list[dict]:
+    """Build simple fallback personas from company profile when LLM fails.
+
+    These are less detailed than LLM-generated personas but ensure
+    Exa searches always run — data is better than no data.
+    """
+    name = profile.get("name", "startup")
+    stage = profile.get("stage", "launched")
+    biz_model = profile.get("business_model", "")
+
+    # Extract keywords from market/one_liner for search queries
+    context = f"{one_liner} {market} {biz_model}".strip()
+    if not context or len(context) < 10:
+        context = name
+
+    personas = [
+        {
+            "name": "Early Adopter",
+            "who": f"People actively looking for solutions like {name}",
+            "age_range": "25-45",
+            "income": "varies",
+            "pain_signals": [
+                f"looking for {market} solution",
+                f"frustrated with current {market} options",
+                f"need help with {one_liner[:60]}",
+            ],
+            "social_networks": {
+                "primary": ["Twitter/X", "Reddit"],
+                "secondary": ["LinkedIn", "Discord"],
+            },
+            "subreddits": ["r/startups", "r/SaaS", "r/Entrepreneur"],
+            "willingness_to_pay": "medium",
+            "trigger_events": [f"discovered {market} is a problem"],
+            "reachability": 7,
+            "network_value": 6,
+            "search_queries": [
+                f"looking for {context[:80]}",
+                f"site:reddit.com need help with {market[:60]}",
+            ],
+        },
+        {
+            "name": "Industry Insider",
+            "who": f"Professionals in the {market} space discussing problems",
+            "age_range": "28-50",
+            "income": "varies",
+            "pain_signals": [
+                f"{market} is broken",
+                f"there has to be a better way to {one_liner[:50]}",
+            ],
+            "social_networks": {
+                "primary": ["LinkedIn", "Twitter/X"],
+                "secondary": ["Reddit", "Substack"],
+            },
+            "subreddits": [],
+            "willingness_to_pay": "high",
+            "trigger_events": [f"pain point in {market}"],
+            "reachability": 6,
+            "network_value": 8,
+            "search_queries": [
+                f"{market} problems frustrations 2025 2026",
+                f"alternatives to {name} {market}",
+            ],
+        },
+        {
+            "name": "Community Voice",
+            "who": f"Active community members discussing {market} topics",
+            "age_range": "22-40",
+            "income": "varies",
+            "pain_signals": [
+                f"anyone know a good {market} tool",
+                f"recommendation for {one_liner[:50]}",
+            ],
+            "social_networks": {
+                "primary": ["Reddit", "Discord"],
+                "secondary": ["Twitter/X", "Facebook Groups"],
+            },
+            "subreddits": ["r/startups"],
+            "willingness_to_pay": "low-medium",
+            "trigger_events": [f"asking for {market} recommendations"],
+            "reachability": 8,
+            "network_value": 5,
+            "search_queries": [
+                f"site:reddit.com recommend {market[:60]} tool",
+                f"who is building in {market[:60]} space",
+            ],
+        },
+    ]
+    return personas
 
 
 async def _generate_personas(startup_data: str, analysis: dict) -> list[dict]:
@@ -113,9 +209,25 @@ Return valid JSON array with exactly 3 personas:
     "trigger_events": ["3-5 specific moments when they become ready to buy"],
     "reachability": "number 1-10 — how easy to reach via cold outreach",
     "network_value": "number 1-10 — how much they amplify if they love the product",
-    "search_queries": ["3-5 Exa search queries to find these people"]
+    "search_queries": ["3-5 Exa search queries to find REAL PEOPLE expressing pain signals"]
   }}
 ]
+
+CRITICAL RULES FOR search_queries:
+- We want to find REAL PEOPLE talking about their problems, NOT articles or blog posts.
+- Queries should find: Twitter/X posts, Reddit threads, LinkedIn posts, forum discussions, community posts.
+- Good queries target social media content where people express frustration or ask for help.
+- Examples of GOOD queries:
+  - "I've been looking for a way to invest in real estate but don't have enough capital" (finds Reddit/forum posts)
+  - "site:reddit.com frustrated with traditional investment options small amounts" (finds Reddit discussions)
+  - "solo founder need advice on pricing my SaaS" (finds people asking for help)
+  - "looking for alternatives to [competitor] that actually works" (finds people comparing solutions)
+- Examples of BAD queries (DO NOT generate these):
+  - "how to invest in real estate" (returns articles and guides, not people)
+  - "best tools for startups" (returns listicles, not discussions)
+  - "fractional ownership platform" (returns company pages, not users)
+- Mix queries: some for Reddit/forums, some for Twitter/X, some for LinkedIn.
+- Include at least one query with "site:reddit.com" prefix for targeted Reddit results.
 
 Be SPECIFIC. Not "startup founders" but "solo SaaS founders who just launched and have <$1K MRR".
 Pain signals should be REAL phrases people post online, not made-up ones."""
@@ -216,12 +328,37 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
         return []
 
     last_error = None
+
+    # Determine if query targets specific domains (e.g. "site:reddit.com")
+    include_domains = None
+    clean_query = query
+    if "site:" in query:
+        # Extract domain filter from query and pass to Exa properly
+        import re as _re
+        domain_match = _re.search(r"site:(\S+)", query)
+        if domain_match:
+            include_domains = [domain_match.group(1)]
+            clean_query = _re.sub(r"site:\S+\s*", "", query).strip()
+
+    # Build request body — prefer social/community content for lead finding
+    request_body = {
+        "query": clean_query,
+        "numResults": num_results,
+        "type": "auto",
+        "contents": {
+            "text": {"maxCharacters": 1500},
+        },
+    }
+    if include_domains:
+        request_body["includeDomains"] = include_domains
+
     # Create client ONCE outside the retry loop to reuse connections
     async with httpx.AsyncClient(timeout=_EXA_TIMEOUT) as client:
         for attempt in range(2):  # 2 attempts max (down from 3)
             try:
                 logger.info(
                     f"[LEADS] Exa search attempt {attempt+1}/2: {query[:80]}"
+                    f"{' (domain: ' + include_domains[0] + ')' if include_domains else ''}"
                 )
                 resp = await client.post(
                     "https://api.exa.ai/search",
@@ -229,14 +366,7 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
                         "x-api-key": settings.exa_api_key,
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "query": query,
-                        "numResults": num_results,
-                        "type": "auto",
-                        "contents": {
-                            "text": {"maxCharacters": 1500},
-                        },
-                    },
+                    json=request_body,
                 )
 
                 if resp.status_code == 429:
@@ -363,7 +493,7 @@ def _extract_lead_info(result: dict, persona: dict) -> dict | None:
 
 
 async def _call_vps_proxy(prompt: str) -> str:
-    """Call VPS Claude proxy for lead generation. Uses Sonnet (fast) not Opus."""
+    """Call VPS Claude proxy for lead generation. Uses Opus for rich personas."""
     url = f"{settings.vps_proxy_url.rstrip('/')}/chat/completions"
     async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
         t0 = _time.monotonic()
@@ -376,7 +506,7 @@ async def _call_vps_proxy(prompt: str) -> str:
                     "X-Proxy-Key": settings.vps_proxy_key,
                 },
                 json={
-                    "model": _VPS_PERSONA_MODEL,  # Sonnet, not Opus — much faster for JSON
+                    "model": _VPS_PERSONA_MODEL,  # Opus for rich persona generation
                     "max_tokens": 4000,
                     "messages": [
                         {
