@@ -26,8 +26,8 @@ _EXA_SEMAPHORE = asyncio.Semaphore(3)
 # Exa typically responds in <2s; anything over 15s is hung
 _EXA_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
-# LLM timeout — 120s per attempt (Opus needs more time for rich persona generation)
-_LLM_TIMEOUT = httpx.Timeout(120.0, connect=15.0)
+# LLM timeout — 300s per attempt (Opus needs more time for rich persona generation)
+_LLM_TIMEOUT = httpx.Timeout(300.0, connect=15.0)
 
 # Use Opus for persona generation — richer, more nuanced personas
 _PERSONA_MODEL = "anthropic/claude-opus-4"

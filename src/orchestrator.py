@@ -79,7 +79,7 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
         ack_text = (
             f"On it, @{request.author_username}. "
             f"Running full 19-channel traction analysis on {request.target_display}.\n\n"
-            f"This takes about 60 seconds. Thread incoming."
+            f"This takes 2-5 minutes (we use the big brain model). Thread incoming."
         )
         poller.reply_to_tweet(request.tweet_id, ack_text)
     else:

@@ -219,8 +219,8 @@ async def _call_vps_proxy(prompt: str) -> str:
     last_error = None
     for attempt in range(2):  # 2 attempts max — saves time on VPS failure
         try:
-            # 180s timeout — Opus generating 12K tokens of 19-channel JSON needs time
-            async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+            # 420s timeout — Opus generating 12K tokens of 19-channel JSON needs time
+            async with httpx.AsyncClient(timeout=httpx.Timeout(420.0, connect=15.0)) as client:
                 resp = await client.post(
                     url,
                     headers={
@@ -255,7 +255,7 @@ async def _call_vps_proxy(prompt: str) -> str:
 
                 return choices[0]["message"]["content"]
         except httpx.TimeoutException as e:
-            last_error = f"timeout after 180s ({type(e).__name__})"
+            last_error = f"timeout after 420s ({type(e).__name__})"
             logger.warning(f"VPS proxy timeout on attempt {attempt + 1}/2: {last_error}")
             await asyncio.sleep(3)
         except httpx.ConnectError as e:
