@@ -32,28 +32,29 @@ async def resolve_url(url: str) -> str:
         return url  # Not a short URL, no need to resolve
 
     logger.info(f"Resolving shortened URL: {url}")
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.head(url, headers={"User-Agent": "Mozilla/5.0 mckoutie-bot/1.0"})
-            resolved = str(resp.url)
-            if resolved != url:
-                logger.info(f"Resolved {url} -> {resolved}")
-            return resolved
-    except httpx.TooManyRedirects:
-        logger.warning(f"Too many redirects resolving {url}")
-        return url
-    except Exception as e:
-        # If HEAD fails, try GET (some servers don't support HEAD)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    # Try GET first (more reliable than HEAD for URL shorteners)
+    for method in ["GET", "HEAD"]:
         try:
-            async with httpx.AsyncClient(timeout=15, follow_redirects=True, max_redirects=10) as client:
-                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 mckoutie-bot/1.0"})
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True, max_redirects=10) as client:
+                if method == "GET":
+                    resp = await client.get(url, headers=headers)
+                else:
+                    resp = await client.head(url, headers=headers)
                 resolved = str(resp.url)
                 if resolved != url:
-                    logger.info(f"Resolved {url} -> {resolved} (via GET fallback)")
+                    logger.info(f"Resolved {url} -> {resolved} (via {method})")
+                    return resolved
+                logger.info(f"{method} returned same URL: {url}")
                 return resolved
-        except Exception as e2:
-            logger.warning(f"Failed to resolve URL {url}: {e2}")
-            return url
+        except Exception as e:
+            logger.warning(f"URL resolve {method} failed for {url}: {e}")
+            continue
+
+    logger.warning(f"All resolve methods failed for {url}, returning original")
+    return url
 
 
 async def scrape_website(url: str) -> dict:

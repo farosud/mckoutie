@@ -240,10 +240,12 @@ async def _call_openrouter(prompt: str) -> str:
 
                 if resp.status_code != 200:
                     body = resp.text
-                    logger.warning(
-                        f"OpenRouter returned {resp.status_code} on attempt {attempt + 1}/3: {body[:500]}"
+                    logger.error(
+                        f"OpenRouter returned {resp.status_code} on attempt {attempt + 1}/3: {body[:1000]}"
                     )
-                    resp.raise_for_status()
+                    last_error = f"HTTP {resp.status_code}: {body[:500]}"
+                    await asyncio.sleep(3)
+                    continue
 
                 data = resp.json()
 
