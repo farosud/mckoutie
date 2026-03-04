@@ -14,6 +14,48 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 
+async def resolve_url(url: str) -> str:
+    """
+    Follow redirects to resolve shortened URLs (t.co, bit.ly, etc.)
+    to their final destination. Returns the resolved URL.
+    """
+    if not url.startswith("http"):
+        url = "https://" + url
+
+    # Check if this looks like a shortened URL that needs resolving
+    short_domains = ["t.co", "bit.ly", "goo.gl", "ow.ly", "tinyurl.com", "is.gd", "buff.ly"]
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+
+    if not any(hostname == d or hostname.endswith(f".{d}") for d in short_domains):
+        return url  # Not a short URL, no need to resolve
+
+    logger.info(f"Resolving shortened URL: {url}")
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.head(url, headers={"User-Agent": "Mozilla/5.0 mckoutie-bot/1.0"})
+            resolved = str(resp.url)
+            if resolved != url:
+                logger.info(f"Resolved {url} -> {resolved}")
+            return resolved
+    except httpx.TooManyRedirects:
+        logger.warning(f"Too many redirects resolving {url}")
+        return url
+    except Exception as e:
+        # If HEAD fails, try GET (some servers don't support HEAD)
+        try:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True, max_redirects=10) as client:
+                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 mckoutie-bot/1.0"})
+                resolved = str(resp.url)
+                if resolved != url:
+                    logger.info(f"Resolved {url} -> {resolved} (via GET fallback)")
+                return resolved
+        except Exception as e2:
+            logger.warning(f"Failed to resolve URL {url}: {e2}")
+            return url
+
+
 async def scrape_website(url: str) -> dict:
     """
     Scrape a startup website and return structured content.
@@ -31,6 +73,9 @@ async def scrape_website(url: str) -> dict:
     # Normalize URL
     if not url.startswith("http"):
         url = "https://" + url
+
+    # Resolve shortened URLs (t.co, bit.ly, etc.) before scraping
+    url = await resolve_url(url)
 
     # Try each direct scraper in order
     for scraper_fn in [_scrape_firecrawl, _scrape_exa, _scrape_jina, _scrape_raw]:

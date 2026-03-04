@@ -191,8 +191,31 @@ async def _call_anthropic(prompt: str) -> str:
     raise RuntimeError(f"Anthropic API failed after 3 attempts: {last_error}")
 
 
+def _get_openrouter_model() -> str:
+    """
+    Map the configured analysis_model to a valid OpenRouter model ID.
+
+    Anthropic native IDs (e.g. 'claude-sonnet-4-20250514') don't work on
+    OpenRouter — they use 'anthropic/claude-sonnet-4' style IDs instead.
+    """
+    model = settings.analysis_model
+
+    # If it already has a provider prefix (e.g. "anthropic/claude-sonnet-4"), use as-is
+    if "/" in model:
+        return model
+
+    # Strip date suffixes like '-20250514' that Anthropic uses but OpenRouter doesn't
+    # Pattern: strip trailing -YYYYMMDD
+    clean = re.sub(r"-\d{8}$", "", model)
+
+    return f"anthropic/{clean}"
+
+
 async def _call_openrouter(prompt: str) -> str:
     """Call OpenRouter API (supports Claude, GPT, etc.)."""
+    model_id = _get_openrouter_model()
+    logger.info(f"OpenRouter model: {model_id}")
+
     last_error = None
     for attempt in range(3):
         try:
@@ -206,7 +229,7 @@ async def _call_openrouter(prompt: str) -> str:
                         "X-Title": "mckoutie",
                     },
                     json={
-                        "model": f"anthropic/{settings.analysis_model}",
+                        "model": model_id,
                         "max_tokens": settings.analysis_max_tokens,
                         "messages": [
                             {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
@@ -214,9 +237,23 @@ async def _call_openrouter(prompt: str) -> str:
                         ],
                     },
                 )
-                resp.raise_for_status()
+
+                if resp.status_code != 200:
+                    body = resp.text
+                    logger.warning(
+                        f"OpenRouter returned {resp.status_code} on attempt {attempt + 1}/3: {body[:500]}"
+                    )
+                    resp.raise_for_status()
+
                 data = resp.json()
-                return data["choices"][0]["message"]["content"]
+
+                # Validate response structure
+                choices = data.get("choices")
+                if not choices or not choices[0].get("message", {}).get("content"):
+                    logger.warning(f"OpenRouter returned empty/malformed response: {data}")
+                    raise ValueError("Empty response from OpenRouter")
+
+                return choices[0]["message"]["content"]
         except Exception as e:
             last_error = str(e)
             logger.warning(f"OpenRouter error on attempt {attempt + 1}/3: {e}")
