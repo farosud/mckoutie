@@ -134,12 +134,22 @@ async def landing_ar():
             min-height: 100vh; display: flex; flex-direction: column;
             justify-content: center; align-items: center; text-align: center;
             padding: 2rem; position: relative;
-            background: url('https://i0.wp.com/www.sensesatlas.com/wp-content/uploads/2020/05/BiyC5vOFtGL6CGvyMJ14c3rXYZrrFy3i_VLnOUyvJ2Q.jpg?fit=2119%2C2078&ssl=1') center center / cover no-repeat;
+            background: url('https://images.unsplash.com/photo-1662393372595-861498121e90?w=1920&q=80&auto=format&fit=crop') center center / cover no-repeat;
         }
         .hero::before {
             content: ''; position: absolute; inset: 0;
-            background: rgba(10,10,10,0.75);
+            background: rgba(10,10,10,0.55);
             pointer-events: none;
+        }
+        .hero-content-box {
+            position: relative; z-index: 1;
+            background: rgba(10,10,10,0.8);
+            border: 1px solid rgba(117,170,219,0.2);
+            border-radius: 12px;
+            padding: 3rem 2.5rem;
+            max-width: 650px;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
         }
         .flag-bar {
             width: 100%; height: 3px; position: absolute; top: 0;

@@ -1,7 +1,12 @@
 """
 Traction analysis engine — runs the full 19-channel analysis via LLM.
 
-Supports: Anthropic (direct) → OpenRouter (fallback).
+Architecture:
+  - MAIN ANALYSIS (19 channels, ~12K tokens) → Sonnet on VPS (fast, reliable)
+  - HOT TAKE SYNTHESIS (short, high-value) → Opus on VPS (deep thinking)
+  - Fallback chain: VPS proxy → Anthropic direct → OpenRouter
+
+Supports: VPS proxy (primary) → Anthropic (direct) → OpenRouter (fallback).
 Takes raw startup data (website content + twitter) and produces
 a structured McKinsey-style consulting brief.
 """
@@ -151,28 +156,71 @@ Return valid JSON with this structure:
     }}
   ],
 
-  "competitive_moat": "string — 2-3 paragraphs on what their long-term defensibility could be and how to build it through the traction channels",
-
-  "hot_take": "string — your single most provocative, useful opinion about this startup. The thing nobody would tell them but they NEED to hear."
+  "competitive_moat": "string — 2-3 paragraphs on what their long-term defensibility could be and how to build it through the traction channels"
 }}
 
 Analyze ALL 19 channels in channel_analysis. Score each honestly — some should be 1-2 (bad fit).
 The bullseye_ranking must have exactly 3 in inner_ring.
 Be specific enough that they can execute on day 1 without further research.
+
+NOTE: Do NOT include a "hot_take" field — that will be generated separately by a different model.
 """
 
+# --- Hot take prompt (sent to Opus for synthesis) ---
 
-async def _call_anthropic(prompt: str) -> str:
+HOT_TAKE_SYSTEM_PROMPT = """You are mckoutie — a brutally honest AI startup consultant with the
+strategic depth of McKinsey and the delivery of a friend who's seen 1000 startups.
+
+You've just finished analyzing a startup. Now you need to deliver the ONE insight
+that nobody would tell them but they NEED to hear. This is the thing that gets
+screenshotted. The thing that makes founders go "...shit, they're right."
+
+Be provocative, specific, and useful. Not mean for the sake of it — sharp because
+the truth matters. Reference their specific situation, not generic startup advice."""
+
+HOT_TAKE_PROMPT = """Based on this analysis of {startup_name}, write your single most provocative
+and useful opinion about this startup.
+
+## ANALYSIS SUMMARY
+
+Company: {startup_name}
+One-liner: {one_liner}
+Stage: {stage}
+Market: {market}
+Unique angle: {unique_angle}
+
+Strengths: {strengths}
+Weaknesses: {weaknesses}
+
+Top 3 channels: {top_channels}
+Executive summary: {exec_summary}
+
+## YOUR TASK
+
+Write ONE paragraph — your hot take. The thing nobody would tell them but they NEED to hear.
+This should be 2-4 sentences max. Punchy. Specific. Screenshottable.
+
+Return ONLY the hot take text, no JSON, no formatting, no preamble."""
+
+
+async def _call_anthropic(
+    prompt: str,
+    system_prompt: str = ANALYSIS_SYSTEM_PROMPT,
+    model: str | None = None,
+    max_tokens: int | None = None,
+) -> str:
     """Call Anthropic API directly."""
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    _model = model or settings.analysis_model
+    _max_tokens = max_tokens or settings.analysis_max_tokens
 
     last_error = None
     for attempt in range(3):
         try:
             response = await client.messages.create(
-                model=settings.analysis_model,
-                max_tokens=settings.analysis_max_tokens,
-                system=ANALYSIS_SYSTEM_PROMPT,
+                model=_model,
+                max_tokens=_max_tokens,
+                system=system_prompt,
                 messages=[{"role": "user", "content": prompt}],
             )
             return response.content[0].text
@@ -191,21 +239,32 @@ async def _call_anthropic(prompt: str) -> str:
     raise RuntimeError(f"Anthropic API failed after 3 attempts: {last_error}")
 
 
-def _get_openrouter_model() -> str:
-    """Get the OpenRouter model ID for the main analysis (Opus)."""
-    return settings.analysis_model_fallback
+async def _call_vps_proxy(
+    prompt: str,
+    system_prompt: str = ANALYSIS_SYSTEM_PROMPT,
+    model: str | None = None,
+    max_tokens: int | None = None,
+    timeout_seconds: float = 240.0,
+) -> str:
+    """Call the VPS Claude proxy (Claude Code Max plan).
 
-
-async def _call_vps_proxy(prompt: str) -> str:
-    """Call the VPS Claude proxy (Claude Code Max plan)."""
+    Args:
+        prompt: User prompt text.
+        system_prompt: System prompt for the model.
+        model: Model ID to use (defaults to settings.analysis_model).
+        max_tokens: Max tokens for the response.
+        timeout_seconds: Request timeout in seconds (default 240s for Sonnet).
+    """
     url = f"{settings.vps_proxy_url.rstrip('/')}/chat/completions"
-    logger.info(f"VPS proxy: {url}, model: {settings.analysis_model}")
+    _model = model or settings.analysis_model
+    _max_tokens = max_tokens or settings.analysis_max_tokens
+
+    logger.info(f"VPS proxy: {url}, model: {_model}, timeout: {timeout_seconds}s")
 
     last_error = None
     for attempt in range(2):  # 2 attempts max — saves time on VPS failure
         try:
-            # 420s timeout — Opus generating 12K tokens of 19-channel JSON needs time
-            async with httpx.AsyncClient(timeout=httpx.Timeout(420.0, connect=15.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=15.0)) as client:
                 resp = await client.post(
                     url,
                     headers={
@@ -213,10 +272,10 @@ async def _call_vps_proxy(prompt: str) -> str:
                         "X-Proxy-Key": settings.vps_proxy_key,
                     },
                     json={
-                        "model": settings.analysis_model,
-                        "max_tokens": settings.analysis_max_tokens,
+                        "model": _model,
+                        "max_tokens": _max_tokens,
                         "messages": [
-                            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                            {"role": "system", "content": system_prompt},
                             {"role": "user", "content": prompt},
                         ],
                     },
@@ -240,7 +299,7 @@ async def _call_vps_proxy(prompt: str) -> str:
 
                 return choices[0]["message"]["content"]
         except httpx.TimeoutException as e:
-            last_error = f"timeout after 420s ({type(e).__name__})"
+            last_error = f"timeout after {timeout_seconds}s ({type(e).__name__})"
             logger.warning(f"VPS proxy timeout on attempt {attempt + 1}/2: {last_error}")
             await asyncio.sleep(3)
         except httpx.ConnectError as e:
@@ -255,15 +314,22 @@ async def _call_vps_proxy(prompt: str) -> str:
     raise RuntimeError(f"VPS proxy failed after 2 attempts: {last_error}")
 
 
-async def _call_openrouter(prompt: str) -> str:
+async def _call_openrouter(
+    prompt: str,
+    system_prompt: str = ANALYSIS_SYSTEM_PROMPT,
+    model: str | None = None,
+    max_tokens: int | None = None,
+    timeout_seconds: float = 180.0,
+) -> str:
     """Call OpenRouter API (fallback)."""
-    model_id = _get_openrouter_model()
-    logger.info(f"OpenRouter fallback, model: {model_id}")
+    _model = model or settings.analysis_model_fallback
+    _max_tokens = max_tokens or settings.analysis_max_tokens
+    logger.info(f"OpenRouter fallback, model: {_model}")
 
     last_error = None
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(timeout=120) as client:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 resp = await client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers={
@@ -273,10 +339,10 @@ async def _call_openrouter(prompt: str) -> str:
                         "X-Title": "mckoutie",
                     },
                     json={
-                        "model": model_id,
-                        "max_tokens": settings.analysis_max_tokens,
+                        "model": _model,
+                        "max_tokens": _max_tokens,
                         "messages": [
-                            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                            {"role": "system", "content": system_prompt},
                             {"role": "user", "content": prompt},
                         ],
                     },
@@ -394,42 +460,144 @@ def _repair_truncated_json(text: str) -> str | None:
     return cleaned
 
 
+async def _generate_hot_take(analysis: dict) -> str:
+    """
+    Generate the hot take using Opus — short, high-value synthesis.
+
+    This runs AFTER the main analysis (Sonnet) is complete.
+    Opus gets a condensed summary and produces 2-4 sentences of pure fire.
+
+    Falls back gracefully — if Opus fails, we extract something from the exec summary.
+    """
+    profile = analysis.get("company_profile", {})
+    bullseye = analysis.get("bullseye_ranking", {})
+    inner_channels = bullseye.get("inner_ring", {}).get("channels", [])
+
+    prompt = HOT_TAKE_PROMPT.format(
+        startup_name=profile.get("name", "this startup"),
+        one_liner=profile.get("one_liner", "unknown"),
+        stage=profile.get("stage", "unknown"),
+        market=profile.get("market", "unknown"),
+        unique_angle=profile.get("unique_angle", "unknown"),
+        strengths=", ".join(profile.get("strengths", [])),
+        weaknesses=", ".join(profile.get("weaknesses", [])),
+        top_channels=", ".join(inner_channels[:3]),
+        exec_summary=analysis.get("executive_summary", "")[:1000],
+    )
+
+    # Try VPS proxy with Opus (short output — should be fast even on Opus)
+    if settings.has_vps_proxy:
+        try:
+            logger.info("Generating hot take via VPS proxy (Opus)...")
+            text = await _call_vps_proxy(
+                prompt,
+                system_prompt=HOT_TAKE_SYSTEM_PROMPT,
+                model=settings.hot_take_model,
+                max_tokens=settings.hot_take_max_tokens,
+                timeout_seconds=120.0,  # 2 min is plenty for ~200 tokens from Opus
+            )
+            return text.strip()
+        except RuntimeError as e:
+            logger.warning(f"Opus hot take via VPS failed: {e}")
+
+    # Fallback: try Anthropic direct with Opus
+    if settings.anthropic_api_key:
+        try:
+            logger.info("Hot take fallback: Anthropic direct (Opus)...")
+            text = await _call_anthropic(
+                prompt,
+                system_prompt=HOT_TAKE_SYSTEM_PROMPT,
+                model=settings.hot_take_model,
+                max_tokens=settings.hot_take_max_tokens,
+            )
+            return text.strip()
+        except RuntimeError as e:
+            logger.warning(f"Opus hot take via Anthropic failed: {e}")
+
+    # Fallback: try OpenRouter with Opus
+    if settings.openrouter_api_key:
+        try:
+            logger.info("Hot take fallback: OpenRouter (Opus)...")
+            text = await _call_openrouter(
+                prompt,
+                system_prompt=HOT_TAKE_SYSTEM_PROMPT,
+                model=settings.hot_take_model_fallback,
+                max_tokens=settings.hot_take_max_tokens,
+                timeout_seconds=90.0,
+            )
+            return text.strip()
+        except RuntimeError as e:
+            logger.warning(f"Opus hot take via OpenRouter failed: {e}")
+
+    # Last resort: pull first paragraph of exec summary as a pseudo hot take
+    logger.warning("All hot take providers failed — using exec summary fallback")
+    exec_summary = analysis.get("executive_summary", "")
+    if exec_summary:
+        first_para = exec_summary.split("\n\n")[0]
+        return first_para[:500]
+
+    return "No hot take available — all LLM providers failed for the synthesis step."
+
+
 async def run_traction_analysis(startup_data: str) -> dict:
     """
     Run the full 19-channel traction analysis.
 
-    Tries Anthropic first, falls back to OpenRouter.
+    Two-phase approach:
+      Phase 1: Sonnet generates the full structured analysis (fast, ~60-90s on VPS)
+      Phase 2: Opus generates the hot take from the analysis summary (short, ~15-30s)
+
+    Fallback chain: VPS proxy → Anthropic direct → OpenRouter.
 
     Args:
         startup_data: Compiled text about the startup (website + twitter + any other intel)
 
     Returns:
-        Structured analysis dict matching the JSON schema above.
+        Structured analysis dict matching the JSON schema above, with hot_take injected.
     """
     prompt = ANALYSIS_PROMPT.format(startup_data=startup_data)
     text = None
 
+    # --- Phase 1: Main analysis via Sonnet (fast, reliable) ---
+
     # Try VPS proxy first (Claude Code Max — free, fast)
     if settings.has_vps_proxy:
-        logger.info("Running traction analysis via VPS proxy (Claude Max)...")
+        logger.info(f"[PHASE 1] Running traction analysis via VPS proxy (Sonnet: {settings.analysis_model})...")
         try:
-            text = await _call_vps_proxy(prompt)
+            text = await _call_vps_proxy(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model,
+                max_tokens=settings.analysis_max_tokens,
+                timeout_seconds=240.0,  # Sonnet is fast — 4 min is generous
+            )
         except RuntimeError as e:
             logger.warning(f"VPS proxy failed: {e}")
 
     # Try Anthropic direct
     if text is None and settings.anthropic_api_key:
-        logger.info("Falling back to Anthropic direct...")
+        logger.info("[PHASE 1] Falling back to Anthropic direct (Sonnet)...")
         try:
-            text = await _call_anthropic(prompt)
+            text = await _call_anthropic(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model,
+                max_tokens=settings.analysis_max_tokens,
+            )
         except RuntimeError as e:
             logger.warning(f"Anthropic failed: {e}")
 
     # Fall back to OpenRouter
     if text is None and settings.openrouter_api_key:
-        logger.info("Falling back to OpenRouter...")
+        logger.info("[PHASE 1] Falling back to OpenRouter (Sonnet)...")
         try:
-            text = await _call_openrouter(prompt)
+            text = await _call_openrouter(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model_fallback,
+                max_tokens=settings.analysis_max_tokens,
+                timeout_seconds=180.0,
+            )
         except RuntimeError as e:
             logger.error(f"OpenRouter also failed: {e}")
             return {"error": f"All LLM providers failed: {e}"}
@@ -437,4 +605,20 @@ async def run_traction_analysis(startup_data: str) -> dict:
     if text is None:
         return {"error": "No LLM provider available (set VPS_PROXY_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY)"}
 
-    return _parse_json_response(text)
+    analysis = _parse_json_response(text)
+
+    if "error" in analysis and "raw_response" in analysis:
+        # Main analysis parse failed — don't bother with hot take
+        return analysis
+
+    # --- Phase 2: Hot take via Opus (short, high-value synthesis) ---
+    logger.info("[PHASE 2] Generating hot take via Opus...")
+    try:
+        hot_take = await _generate_hot_take(analysis)
+        analysis["hot_take"] = hot_take
+        logger.info(f"[PHASE 2] Hot take generated ({len(hot_take)} chars)")
+    except Exception as e:
+        logger.warning(f"[PHASE 2] Hot take generation failed (non-fatal): {e}")
+        analysis["hot_take"] = ""
+
+    return analysis

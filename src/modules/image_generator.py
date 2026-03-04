@@ -241,15 +241,20 @@ async def generate_capybara_image(
             data = response.json()
 
             # Extract image from response — handle multiple formats
+            # Log full response structure for debugging (keys only, not data)
+            logger.info(f"OpenRouter response keys: {list(data.keys())}")
+
             choices = data.get("choices", [])
             if not choices:
-                logger.error("No choices in OpenRouter response")
+                logger.error(f"No choices in OpenRouter response. Top-level keys: {list(data.keys())}")
                 return None
 
             message = choices[0].get("message")
             if not message or not isinstance(message, dict):
                 logger.error(f"No message in choices[0]: {choices[0]}")
                 return None
+
+            logger.info(f"Message keys: {list(message.keys())}")
 
             # Check for images in message.images first (Gemini Flash format)
             images = message.get("images")
@@ -297,11 +302,14 @@ async def generate_capybara_image(
 
             # List/array content — multimodal response
             if isinstance(content, list):
+                logger.info(f"Multimodal content: {len(content)} parts, types: {[p.get('type', type(p).__name__) if isinstance(p, dict) else type(p).__name__ for p in content]}")
+
                 for part in content:
                     if not isinstance(part, dict):
                         continue
                     part_type = part.get("type", "")
-                    # image_url format
+
+                    # image_url format (OpenAI-style)
                     if part_type == "image_url":
                         img_url_obj = part.get("image_url")
                         if isinstance(img_url_obj, dict):
@@ -311,19 +319,87 @@ async def generate_capybara_image(
                         else:
                             continue
                         if url.startswith("data:image"):
+                            logger.info("Found image via image_url part")
                             return _save_base64_image(url)
-                    # image format (inline base64)
+
+                    # image format (inline base64 — various provider formats)
                     elif part_type == "image":
+                        # Check "source" format: {"type": "base64", "media_type": "...", "data": "..."}
+                        source = part.get("source")
+                        if isinstance(source, dict):
+                            b64_data = source.get("data", "")
+                            if b64_data:
+                                mime = source.get("media_type", "image/png")
+                                logger.info(f"Found image via source.data ({mime})")
+                                return _save_raw_base64(b64_data)
+                        # Direct data/image fields
                         b64_data = part.get("data") or part.get("image", "")
                         if b64_data:
+                            logger.info("Found image via image part (data field)")
                             return _save_raw_base64(b64_data)
+
+                    # Gemini native: inline_data format
+                    # {"type": "inline_data", "inline_data": {"mime_type": "image/png", "data": "..."}}
+                    # Also handle without explicit type — just check for inline_data key
+                    elif part_type == "inline_data" or "inline_data" in part:
+                        inline = part.get("inline_data", {})
+                        if isinstance(inline, dict):
+                            b64_data = inline.get("data", "")
+                            mime = inline.get("mime_type", "image/png")
+                            if b64_data:
+                                logger.info(f"Found image via inline_data ({mime})")
+                                return _save_raw_base64(b64_data)
+
+                    # Gemini via OpenRouter: parts within content items
+                    # {"parts": [{"inline_data": {"mime_type": "...", "data": "..."}}]}
+                    elif "parts" in part:
+                        for sub_part in part.get("parts", []):
+                            if isinstance(sub_part, dict) and "inline_data" in sub_part:
+                                inline = sub_part["inline_data"]
+                                if isinstance(inline, dict):
+                                    b64_data = inline.get("data", "")
+                                    mime = inline.get("mime_type", "image/png")
+                                    if b64_data:
+                                        logger.info(f"Found image via parts[].inline_data ({mime})")
+                                        return _save_raw_base64(b64_data)
+
                     # text part with embedded base64
                     elif part_type == "text":
                         text = part.get("text", "")
                         if text.startswith("data:image"):
+                            logger.info("Found image via text part (data URL)")
                             return _save_base64_image(text)
 
+                # Last resort: scan all parts for any key containing base64 image data
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    for key, val in part.items():
+                        if isinstance(val, str) and len(val) > 5000:
+                            # Likely base64 image data — try to decode it
+                            if val.startswith("data:image"):
+                                logger.info(f"Found image via scan: part[{key}] (data URL)")
+                                return _save_base64_image(val)
+                            try:
+                                decoded = base64.b64decode(val[:100])
+                                # Check PNG/JPEG magic bytes
+                                if decoded[:4] in (b'\x89PNG', b'\xff\xd8\xff\xe0', b'\xff\xd8\xff\xe1'):
+                                    logger.info(f"Found image via scan: part[{key}] (raw base64, magic bytes match)")
+                                    return _save_raw_base64(val)
+                            except Exception:
+                                pass
+
                 logger.warning(f"No image found in multimodal response ({len(content)} parts)")
+                # Log sanitized structure for debugging (truncate any long strings)
+                def _sanitize(obj, depth=0):
+                    if depth > 3:
+                        return "..."
+                    if isinstance(obj, dict):
+                        return {k: (f"<{len(v)} chars>" if isinstance(v, str) and len(v) > 100 else _sanitize(v, depth + 1)) for k, v in obj.items()}
+                    if isinstance(obj, list):
+                        return [_sanitize(item, depth + 1) for item in obj[:5]]
+                    return obj
+                logger.warning(f"Content structure: {_sanitize(content)}")
                 return None
 
             logger.error(f"Unexpected content type: {type(content).__name__}")
