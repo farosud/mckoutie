@@ -185,6 +185,8 @@ async def analyze_cli(target: str):
     """Run analysis on a single target (URL or @handle) from the command line."""
     from src.modules.scraper import scrape_website
     from src.modules.twitter_analyzer import analyze_twitter_profile
+    from src.modules.lead_finder import find_leads
+    from src.modules.investor_finder import find_investors
     from src.analysis.traction_engine import run_traction_analysis
     from src.analysis.report_generator import (
         generate_report_id,
@@ -235,6 +237,45 @@ async def analyze_cli(target: str):
         logger.error(f"Analysis failed: {analysis}")
         sys.exit(1)
 
+    # Run lead + investor research in parallel (same as orchestrator)
+    leads_data = {}
+    investors_data = {}
+    try:
+        logger.info("Running lead + investor research (up to 120s)...")
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                find_leads(startup_data, analysis),
+                find_investors(startup_data, analysis),
+                return_exceptions=True,
+            ),
+            timeout=120,
+        )
+        if isinstance(results[0], dict):
+            leads_data = results[0]
+            logger.info(
+                f"Leads: {len(leads_data.get('personas', []))} personas, "
+                f"{len(leads_data.get('leads', []))} leads"
+            )
+        else:
+            logger.warning(f"Lead research failed: {results[0]}")
+
+        if isinstance(results[1], dict):
+            investors_data = results[1]
+            logger.info(
+                f"Investors: {len(investors_data.get('competitors', []))} competitors, "
+                f"{len(investors_data.get('market_investors', []))} market investors"
+            )
+        else:
+            logger.warning(f"Investor research failed: {results[1]}")
+    except asyncio.TimeoutError:
+        logger.warning("Lead/investor research timed out (120s) — continuing without")
+    except Exception as e:
+        logger.warning(f"Lead/investor research failed (non-fatal): {e}")
+
+    # Attach enriched data to analysis
+    analysis["leads_research"] = leads_data
+    analysis["investor_research"] = investors_data
+
     report_id = generate_report_id(target)
     name = analysis.get("company_profile", {}).get("name", target)
 
@@ -252,6 +293,22 @@ async def analyze_cli(target: str):
     for i, tweet in enumerate(teaser, 1):
         print(f"\nTweet {i}:")
         print(tweet)
+
+    # Show lead/investor summary
+    personas = leads_data.get("personas", [])
+    leads = leads_data.get("leads", [])
+    competitors = investors_data.get("competitors", [])
+    market_inv = investors_data.get("market_investors", [])
+
+    if personas or leads or competitors or market_inv:
+        print("\n--- ENRICHMENT ---")
+        print(f"  Personas: {len(personas)}")
+        print(f"  Leads: {len(leads)}")
+        print(f"  Competitors: {len(competitors)}")
+        print(f"  Market investors: {len(market_inv)}")
+    else:
+        print("\n--- ENRICHMENT ---")
+        print("  No lead/investor data (check EXA_API_KEY)")
 
     print(f"\n--- FULL REPORT ---")
     print(f"See: {report_dir}/report.md")

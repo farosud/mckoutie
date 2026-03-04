@@ -340,20 +340,69 @@ def _extract_lead_info(result: dict, persona: dict) -> dict | None:
     }
 
 
-async def _call_llm(prompt: str) -> str:
-    """Call LLM via OpenRouter or Anthropic — with retries.
+async def _call_vps_proxy(prompt: str) -> str:
+    """Call VPS Claude proxy for lead generation."""
+    url = f"{settings.vps_proxy_url.rstrip('/')}/chat/completions"
+    async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
+        for attempt in range(2):
+            t0 = _time.monotonic()
+            try:
+                logger.info(f"[LEADS] VPS proxy attempt {attempt+1}/2")
+                resp = await client.post(
+                    url,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Proxy-Key": settings.vps_proxy_key,
+                    },
+                    json={
+                        "model": settings.analysis_model,
+                        "max_tokens": 4000,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "You are mckoutie — a startup growth expert. Return valid JSON only, no markdown wrapping.",
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                    },
+                )
+                elapsed = _time.monotonic() - t0
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    if content:
+                        logger.info(f"[LEADS] VPS proxy responded in {elapsed:.1f}s ({len(content)} chars)")
+                        return content
+                logger.warning(f"[LEADS] VPS proxy {resp.status_code} after {elapsed:.1f}s")
+                await asyncio.sleep(2 + random.uniform(0, 2))
+            except Exception as e:
+                elapsed = _time.monotonic() - t0
+                logger.warning(f"[LEADS] VPS proxy error after {elapsed:.1f}s: {e}")
+                await asyncio.sleep(2 + random.uniform(0, 2))
+    raise RuntimeError("VPS proxy failed for lead generation")
 
-    Uses a fast model (Gemini Flash) first for speed, falls back to Sonnet.
+
+async def _call_llm(prompt: str) -> str:
+    """Call LLM — tries VPS proxy first, then OpenRouter Gemini (fast), then OpenRouter Claude.
+
     Client is reused across retries to avoid connection overhead.
     """
     last_error = None
 
-    # Try OpenRouter first — fast model, then fallback model
+    # Try VPS proxy first (Claude Max — free)
+    if settings.has_vps_proxy:
+        try:
+            return await _call_vps_proxy(prompt)
+        except RuntimeError as e:
+            last_error = str(e)
+            logger.warning(f"[LEADS] VPS proxy failed: {e}")
+
+    # Try OpenRouter — fast model (Gemini), then Claude fallback
     if settings.openrouter_api_key:
         models_to_try = [_PERSONA_MODEL, _PERSONA_MODEL_FALLBACK]
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
             for model in models_to_try:
-                for attempt in range(2):  # 2 attempts per model (not 3)
+                for attempt in range(2):
                     t0 = _time.monotonic()
                     try:
                         logger.info(
@@ -411,7 +460,6 @@ async def _call_llm(prompt: str) -> str:
                         logger.warning(f"[LEADS] OpenRouter error after {elapsed:.1f}s: {e}")
                         await asyncio.sleep(2 + random.uniform(0, 2))
 
-                # If fast model failed both attempts, try fallback model
                 if model == _PERSONA_MODEL:
                     logger.info(f"[LEADS] Fast model failed, trying fallback ({_PERSONA_MODEL_FALLBACK})")
 

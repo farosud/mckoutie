@@ -21,7 +21,11 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = ""
 
-    # OpenRouter (fallback LLM)
+    # VPS Proxy (Claude Code Max — primary LLM)
+    vps_proxy_url: str = "http://165.227.18.32:3457/v1"
+    vps_proxy_key: str = ""
+
+    # OpenRouter (fallback LLM + Gemini image gen)
     openrouter_api_key: str = ""
 
     # Stripe
@@ -67,9 +71,14 @@ class Settings(BaseSettings):
         return self.has_twitter_write
 
     @property
+    def has_vps_proxy(self) -> bool:
+        """Do we have the VPS Claude proxy configured?"""
+        return bool(self.vps_proxy_key and self.vps_proxy_url)
+
+    @property
     def has_llm(self) -> bool:
         """Do we have at least one LLM provider?"""
-        return bool(self.anthropic_api_key or self.openrouter_api_key)
+        return bool(self.vps_proxy_key or self.anthropic_api_key or self.openrouter_api_key)
 
     @property
     def has_payments(self) -> bool:

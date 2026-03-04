@@ -142,12 +142,56 @@ async def _run_update_analysis(record: ReportRecord, fresh_data: str) -> dict:
         fresh_data=fresh_data,
     )
 
-    # Use OpenRouter (primary for updates — cheaper)
+    import re as re_mod
+
+    # Helper to parse LLM text response into JSON
+    def _parse_update_text(text: str) -> dict:
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            match = re_mod.search(r"\{.*\}", text, re_mod.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group())
+                except json.JSONDecodeError:
+                    pass
+            return {"error": "Failed to parse update", "raw": text[:2000]}
+
+    messages = [
+        {"role": "system", "content": UPDATE_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+
+    # Try VPS proxy first (Claude Max — free)
+    if settings.has_vps_proxy:
+        try:
+            url = f"{settings.vps_proxy_url.rstrip('/')}/chat/completions"
+            async with httpx.AsyncClient(timeout=90) as client:
+                resp = await client.post(
+                    url,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Proxy-Key": settings.vps_proxy_key,
+                    },
+                    json={
+                        "model": settings.analysis_model,
+                        "max_tokens": 4000,
+                        "messages": messages,
+                    },
+                )
+                if resp.status_code == 200:
+                    text = resp.json()["choices"][0]["message"]["content"]
+                    return _parse_update_text(text)
+                else:
+                    logger.warning(f"VPS proxy returned {resp.status_code} for update")
+        except Exception as e:
+            logger.warning(f"VPS proxy failed for update: {e}")
+
+    # Fallback to OpenRouter
     if settings.openrouter_api_key:
-        import re
         model = settings.analysis_model
         if "/" not in model:
-            model = re.sub(r"-\d{8}$", "", model)
+            model = re_mod.sub(r"-\d{8}$", "", model)
             model = f"anthropic/{model}"
 
         async with httpx.AsyncClient(timeout=90) as client:
@@ -162,23 +206,12 @@ async def _run_update_analysis(record: ReportRecord, fresh_data: str) -> dict:
                 json={
                     "model": model,
                     "max_tokens": 4000,
-                    "messages": [
-                        {"role": "system", "content": UPDATE_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
+                    "messages": messages,
                 },
             )
             if resp.status_code == 200:
                 text = resp.json()["choices"][0]["message"]["content"]
-                # Parse JSON from response
-                import re as re_mod
-                try:
-                    return json.loads(text)
-                except json.JSONDecodeError:
-                    match = re_mod.search(r"\{.*\}", text, re_mod.DOTALL)
-                    if match:
-                        return json.loads(match.group())
-                    return {"error": "Failed to parse update", "raw": text[:2000]}
+                return _parse_update_text(text)
             else:
                 return {"error": f"LLM returned {resp.status_code}"}
 

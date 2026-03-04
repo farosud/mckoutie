@@ -215,9 +215,17 @@ def _score_leads(leads: list[dict], persona: dict) -> list[dict]:
 
 
 async def _call_llm(system: str, prompt: str) -> str:
-    """Call LLM via OpenRouter (or Anthropic)."""
+    """Call LLM — VPS proxy first, then OpenRouter, then Anthropic direct."""
+    if settings.has_vps_proxy:
+        try:
+            return await _call_vps_proxy(system, prompt)
+        except RuntimeError as e:
+            logger.warning(f"VPS proxy failed: {e}")
     if settings.openrouter_api_key:
-        return await _call_openrouter(system, prompt)
+        try:
+            return await _call_openrouter(system, prompt)
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter failed: {e}")
     if settings.anthropic_api_key:
         import anthropic
         client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -231,8 +239,33 @@ async def _call_llm(system: str, prompt: str) -> str:
     raise RuntimeError("No LLM provider available")
 
 
+async def _call_vps_proxy(system: str, prompt: str) -> str:
+    """Call VPS Claude proxy."""
+    url = f"{settings.vps_proxy_url.rstrip('/')}/chat/completions"
+    async with httpx.AsyncClient(timeout=90) as client:
+        resp = await client.post(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "X-Proxy-Key": settings.vps_proxy_key,
+            },
+            json={
+                "model": settings.analysis_model,
+                "max_tokens": 6000,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"VPS proxy {resp.status_code}: {resp.text[:500]}")
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+
+
 async def _call_openrouter(system: str, prompt: str) -> str:
-    """Call OpenRouter API."""
+    """Call OpenRouter API (fallback)."""
     model = settings.analysis_model
     if "/" not in model:
         model = re.sub(r"-\d{8}$", "", model)

@@ -211,10 +211,60 @@ def _get_openrouter_model() -> str:
     return f"anthropic/{clean}"
 
 
+async def _call_vps_proxy(prompt: str) -> str:
+    """Call the VPS Claude proxy (Claude Code Max plan)."""
+    url = f"{settings.vps_proxy_url.rstrip('/')}/chat/completions"
+    logger.info(f"VPS proxy: {url}, model: {settings.analysis_model}")
+
+    last_error = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(
+                    url,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Proxy-Key": settings.vps_proxy_key,
+                    },
+                    json={
+                        "model": settings.analysis_model,
+                        "max_tokens": settings.analysis_max_tokens,
+                        "messages": [
+                            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt},
+                        ],
+                    },
+                )
+
+                if resp.status_code != 200:
+                    body = resp.text
+                    logger.error(
+                        f"VPS proxy returned {resp.status_code} on attempt {attempt + 1}/3: {body[:1000]}"
+                    )
+                    last_error = f"HTTP {resp.status_code}: {body[:500]}"
+                    await asyncio.sleep(3)
+                    continue
+
+                data = resp.json()
+
+                choices = data.get("choices")
+                if not choices or not choices[0].get("message", {}).get("content"):
+                    logger.warning(f"VPS proxy returned empty/malformed response: {data}")
+                    raise ValueError("Empty response from VPS proxy")
+
+                return choices[0]["message"]["content"]
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"VPS proxy error on attempt {attempt + 1}/3: {e}")
+            await asyncio.sleep(3)
+
+    raise RuntimeError(f"VPS proxy failed after 3 attempts: {last_error}")
+
+
 async def _call_openrouter(prompt: str) -> str:
-    """Call OpenRouter API (supports Claude, GPT, etc.)."""
+    """Call OpenRouter API (fallback)."""
     model_id = _get_openrouter_model()
-    logger.info(f"OpenRouter model: {model_id}")
+    logger.info(f"OpenRouter fallback, model: {model_id}")
 
     last_error = None
     for attempt in range(3):
@@ -249,7 +299,6 @@ async def _call_openrouter(prompt: str) -> str:
 
                 data = resp.json()
 
-                # Validate response structure
                 choices = data.get("choices")
                 if not choices or not choices[0].get("message", {}).get("content"):
                     logger.warning(f"OpenRouter returned empty/malformed response: {data}")
@@ -366,19 +415,25 @@ async def run_traction_analysis(startup_data: str) -> dict:
     prompt = ANALYSIS_PROMPT.format(startup_data=startup_data)
     text = None
 
-    # Try Anthropic first
-    if settings.anthropic_api_key:
-        logger.info("Running traction analysis via Anthropic Claude...")
+    # Try VPS proxy first (Claude Code Max — free, fast)
+    if settings.has_vps_proxy:
+        logger.info("Running traction analysis via VPS proxy (Claude Max)...")
+        try:
+            text = await _call_vps_proxy(prompt)
+        except RuntimeError as e:
+            logger.warning(f"VPS proxy failed: {e}")
+
+    # Try Anthropic direct
+    if text is None and settings.anthropic_api_key:
+        logger.info("Falling back to Anthropic direct...")
         try:
             text = await _call_anthropic(prompt)
         except RuntimeError as e:
             logger.warning(f"Anthropic failed: {e}")
-            if settings.openrouter_api_key:
-                logger.info("Falling back to OpenRouter...")
 
     # Fall back to OpenRouter
     if text is None and settings.openrouter_api_key:
-        logger.info("Running traction analysis via OpenRouter...")
+        logger.info("Falling back to OpenRouter...")
         try:
             text = await _call_openrouter(prompt)
         except RuntimeError as e:
@@ -386,6 +441,6 @@ async def run_traction_analysis(startup_data: str) -> dict:
             return {"error": f"All LLM providers failed: {e}"}
 
     if text is None:
-        return {"error": "No LLM provider available (set ANTHROPIC_API_KEY or OPENROUTER_API_KEY)"}
+        return {"error": "No LLM provider available (set VPS_PROXY_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY)"}
 
     return _parse_json_response(text)
