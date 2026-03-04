@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     growth_price_usd: int = 200  # growth tier monthly subscription price
     enterprise_email: str = "emi@mckoutie.com"
     poll_interval_seconds: int = 60
-    analysis_model: str = "claude-sonnet-4-20250514"
+    analysis_model: str = "claude-opus-4-20250918"
     analysis_max_tokens: int = 12000
 
     # Stripe price IDs (created on first checkout if empty)

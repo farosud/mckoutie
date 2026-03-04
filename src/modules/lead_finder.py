@@ -31,7 +31,7 @@ _LLM_TIMEOUT = httpx.Timeout(90.0, connect=15.0)
 # Use a fast model for persona generation (structured JSON, doesn't need Sonnet)
 _PERSONA_MODEL = "google/gemini-2.5-flash-preview"
 # Fallback to Sonnet if needed
-_PERSONA_MODEL_FALLBACK = "anthropic/claude-sonnet-4"
+_PERSONA_MODEL_FALLBACK = "anthropic/claude-opus-4"
 
 
 async def find_leads(startup_data: str, analysis: dict) -> dict:
@@ -470,7 +470,7 @@ async def _call_llm(prompt: str) -> str:
             import anthropic
             aclient = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
             response = await aclient.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-opus-4-20250918",
                 max_tokens=4000,
                 messages=[{"role": "user", "content": prompt}],
             )
