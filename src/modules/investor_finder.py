@@ -90,12 +90,12 @@ async def _find_competitors(name: str, one_liner: str, market: str) -> list[dict
     seen = set()
 
     queries = [
-        f"companies similar to {name} {one_liner}",
-        f"{market} startups funding raised",
-        f"alternatives to {name} competitors",
+        f"{market} startup raised funding round investors",
+        f"{name} competitors funding series seed raised",
+        f"{one_liner} startups venture capital investment",
     ]
 
-    for query in queries[:2]:
+    for query in queries[:3]:
         try:
             results = await _exa_search(query, num_results=5)
             for r in results:
@@ -230,7 +230,7 @@ def _extract_investor_names(text: str) -> list[str]:
 
 
 async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
-    """Run an Exa semantic search."""
+    """Run an Exa semantic search with text content."""
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             "https://api.exa.ai/search",
@@ -241,8 +241,10 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
             json={
                 "query": query,
                 "numResults": num_results,
-                "text": True,
                 "type": "auto",
+                "contents": {
+                    "text": {"maxCharacters": 1000},
+                },
             },
         )
         resp.raise_for_status()

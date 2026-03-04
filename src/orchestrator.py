@@ -107,10 +107,24 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
         leads_data = {}
         investors_data = {}
         try:
-            leads_task = asyncio.create_task(find_leads(startup_data, analysis))
-            investors_task = asyncio.create_task(find_investors(startup_data, analysis))
-            leads_data = await asyncio.wait_for(leads_task, timeout=60)
-            investors_data = await asyncio.wait_for(investors_task, timeout=60)
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    find_leads(startup_data, analysis),
+                    find_investors(startup_data, analysis),
+                    return_exceptions=True,
+                ),
+                timeout=120,
+            )
+            # Unpack results — each may be a dict or an Exception
+            if isinstance(results[0], dict):
+                leads_data = results[0]
+            else:
+                logger.warning(f"Lead research failed: {results[0]}", exc_info=results[0])
+            if isinstance(results[1], dict):
+                investors_data = results[1]
+            else:
+                logger.warning(f"Investor research failed: {results[1]}", exc_info=results[1])
+
             logger.info(
                 f"Lead research: {len(leads_data.get('personas', []))} personas, "
                 f"{len(leads_data.get('leads', []))} leads. "
@@ -118,9 +132,9 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
                 f"{len(investors_data.get('market_investors', []))} investors."
             )
         except asyncio.TimeoutError:
-            logger.warning("Lead/investor research timed out (60s) — continuing without")
+            logger.warning("Lead/investor research timed out (120s) — continuing without")
         except Exception as e:
-            logger.warning(f"Lead/investor research failed (non-fatal): {e}")
+            logger.warning(f"Lead/investor research failed (non-fatal): {e}", exc_info=True)
 
         # Attach enriched data to analysis for dashboard
         analysis["leads_research"] = leads_data

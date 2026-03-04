@@ -159,7 +159,7 @@ async def _find_leads_via_exa(
 
 
 async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
-    """Run an Exa semantic search."""
+    """Run an Exa semantic search with text content."""
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             "https://api.exa.ai/search",
@@ -170,8 +170,10 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
             json={
                 "query": query,
                 "numResults": num_results,
-                "text": True,
                 "type": "auto",
+                "contents": {
+                    "text": {"maxCharacters": 1000},
+                },
             },
         )
         resp.raise_for_status()
