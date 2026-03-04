@@ -192,23 +192,8 @@ async def _call_anthropic(prompt: str) -> str:
 
 
 def _get_openrouter_model() -> str:
-    """
-    Map the configured analysis_model to a valid OpenRouter model ID.
-
-    Anthropic native IDs (e.g. 'claude-sonnet-4-20250514') don't work on
-    OpenRouter — they use 'anthropic/claude-sonnet-4' style IDs instead.
-    """
-    model = settings.analysis_model
-
-    # If it already has a provider prefix (e.g. "anthropic/claude-sonnet-4"), use as-is
-    if "/" in model:
-        return model
-
-    # Strip date suffixes like '-20250514' that Anthropic uses but OpenRouter doesn't
-    # Pattern: strip trailing -YYYYMMDD
-    clean = re.sub(r"-\d{8}$", "", model)
-
-    return f"anthropic/{clean}"
+    """Get the OpenRouter model ID for the main analysis (Opus)."""
+    return settings.analysis_model_fallback
 
 
 async def _call_vps_proxy(prompt: str) -> str:

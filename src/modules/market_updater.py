@@ -174,7 +174,7 @@ async def _run_update_analysis(record: ReportRecord, fresh_data: str) -> dict:
                         "X-Proxy-Key": settings.vps_proxy_key,
                     },
                     json={
-                        "model": settings.analysis_model,
+                        "model": settings.update_model,  # Haiku — fast delta analysis
                         "max_tokens": 4000,
                         "messages": messages,
                     },
@@ -189,10 +189,7 @@ async def _run_update_analysis(record: ReportRecord, fresh_data: str) -> dict:
 
     # Fallback to OpenRouter
     if settings.openrouter_api_key:
-        model = settings.analysis_model
-        if "/" not in model:
-            model = re_mod.sub(r"-\d{8}$", "", model)
-            model = f"anthropic/{model}"
+        model = settings.update_model_fallback  # Haiku on OpenRouter
 
         async with httpx.AsyncClient(timeout=90) as client:
             resp = await client.post(

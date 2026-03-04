@@ -275,7 +275,7 @@ async def _call_llm(system: str, prompt: str) -> str:
         import anthropic
         client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
         resp = await client.messages.create(
-            model=settings.analysis_model,
+            model=settings.persona_model,
             max_tokens=6000,
             system=system,
             messages=[{"role": "user", "content": prompt}],
@@ -295,7 +295,7 @@ async def _call_vps_proxy(system: str, prompt: str) -> str:
                 "X-Proxy-Key": settings.vps_proxy_key,
             },
             json={
-                "model": settings.analysis_model,
+                "model": settings.persona_model,
                 "max_tokens": 6000,
                 "messages": [
                     {"role": "system", "content": system},
@@ -310,11 +310,8 @@ async def _call_vps_proxy(system: str, prompt: str) -> str:
 
 
 async def _call_openrouter(system: str, prompt: str) -> str:
-    """Call OpenRouter API (fallback)."""
-    model = settings.analysis_model
-    if "/" not in model:
-        model = re.sub(r"-\d{8}$", "", model)
-        model = f"anthropic/{model}"
+    """Call OpenRouter API (fallback) — uses Sonnet for structured tasks."""
+    model = settings.persona_model_fallback
 
     async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(

@@ -29,13 +29,9 @@ _EXA_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 # LLM timeout — 300s per attempt (Opus needs more time for rich persona generation)
 _LLM_TIMEOUT = httpx.Timeout(300.0, connect=15.0)
 
-# Use Opus for persona generation — richer, more nuanced personas
-_PERSONA_MODEL = "anthropic/claude-opus-4"
-# Fallback to Gemini Flash if Opus fails on OpenRouter
+# Use Sonnet for persona generation — fast + good enough for structured output
+# Opus is reserved for the main 19-channel analysis (the product)
 _PERSONA_MODEL_FALLBACK = "google/gemini-2.5-flash"
-
-# Use Opus on VPS — same model as main analysis
-_VPS_PERSONA_MODEL = "claude-opus-4-20250918"
 
 
 async def find_leads(startup_data: str, analysis: dict) -> dict:
@@ -498,7 +494,7 @@ async def _call_vps_proxy(prompt: str) -> str:
     async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
         t0 = _time.monotonic()
         try:
-            logger.info(f"[LEADS] VPS proxy attempt with {_VPS_PERSONA_MODEL}")
+            logger.info(f"[LEADS] VPS proxy attempt with {settings.persona_model}")
             resp = await client.post(
                 url,
                 headers={
@@ -506,7 +502,7 @@ async def _call_vps_proxy(prompt: str) -> str:
                     "X-Proxy-Key": settings.vps_proxy_key,
                 },
                 json={
-                    "model": _VPS_PERSONA_MODEL,  # Opus for rich persona generation
+                    "model": settings.persona_model,  # Sonnet — fast structured output
                     "max_tokens": 4000,
                     "messages": [
                         {
@@ -555,7 +551,7 @@ async def _call_llm(prompt: str) -> str:
 
     # Fallback to OpenRouter
     if settings.openrouter_api_key:
-        models_to_try = [_PERSONA_MODEL, _PERSONA_MODEL_FALLBACK]
+        models_to_try = [settings.persona_model_fallback, _PERSONA_MODEL_FALLBACK]
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
             for model in models_to_try:
                 for attempt in range(2):
@@ -626,7 +622,7 @@ async def _call_llm(prompt: str) -> str:
             import anthropic
             aclient = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
             response = await aclient.messages.create(
-                model="claude-opus-4-20250918",
+                model=settings.persona_model,
                 max_tokens=4000,
                 messages=[{"role": "user", "content": prompt}],
             )
