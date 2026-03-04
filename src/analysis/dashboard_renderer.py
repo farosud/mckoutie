@@ -1293,13 +1293,19 @@ def _render_hottake(hot_take: str, tier: str) -> str:
 def _render_leads(leads_data: dict, tier: str) -> str:
     personas = leads_data.get("personas", [])
     leads = leads_data.get("leads", [])
+    error = leads_data.get("_error", "")
 
     if not personas and not leads:
-        # No lead data available
+        if error == "timeout":
+            msg = "Lead research timed out — our AI took too long thinking about your customers. The report will auto-update when results come in."
+        elif error:
+            msg = f"Lead research hit a snag: {error[:80]}. We'll retry on the next update cycle."
+        else:
+            msg = "Lead research is processing. Check back shortly for customer personas and potential leads."
         return f"""
     <div class="section-card">
         <h2><span class="accent">Potential</span> Leads</h2>
-        <p style="color:var(--text-muted);font-size:0.85rem;">Lead research runs automatically. Check back for results.</p>
+        <p style="color:var(--text-muted);font-size:0.85rem;">{msg}</p>
     </div>"""
 
     # Personas (show 1 in free, all in starter+)
@@ -1477,12 +1483,19 @@ def _render_investors(investors_data: dict, tier: str) -> str:
     competitors = investors_data.get("competitors", [])
     comp_investors = investors_data.get("competitor_investors", [])
     market_investors = investors_data.get("market_investors", [])
+    error = investors_data.get("_error", "")
 
     if not competitors and not market_investors:
+        if error == "timeout":
+            msg = "Investor research timed out — competitor analysis took too long. Results will appear on the next update cycle."
+        elif error:
+            msg = f"Investor research hit a snag: {error[:80]}. We'll retry on the next update."
+        else:
+            msg = "Investor intelligence is processing. Check back shortly for competitor and investor data."
         return f"""
     <div class="section-card">
         <h2><span class="accent">Investor</span> Intelligence</h2>
-        <p style="color:var(--text-muted);font-size:0.85rem;">Investor research runs automatically. Check back for results.</p>
+        <p style="color:var(--text-muted);font-size:0.85rem;">{msg}</p>
     </div>"""
 
     # Competitors (show 2 in free, all in starter+)

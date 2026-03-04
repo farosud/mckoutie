@@ -104,37 +104,66 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
         update_status(report_id, "analyzing", startup_name=startup_name)
 
         # 4b. Run lead + investor research in parallel (non-blocking, best-effort)
+        # IMPORTANT: Each task gets its own timeout so one failing doesn't kill the other.
         leads_data = {}
         investors_data = {}
-        try:
-            results = await asyncio.wait_for(
-                asyncio.gather(
+
+        async def _run_leads():
+            try:
+                return await asyncio.wait_for(
                     find_leads(startup_data, analysis),
+                    timeout=300,  # 5 min — LLM persona gen + Exa searches need headroom
+                )
+            except asyncio.TimeoutError:
+                logger.error("[ORCHESTRATOR] Lead research timed out after 300s")
+                return {"personas": [], "leads": [], "_error": "timeout"}
+            except Exception as e:
+                logger.error(f"[ORCHESTRATOR] Lead research failed: {e}", exc_info=True)
+                return {"personas": [], "leads": [], "_error": str(e)}
+
+        async def _run_investors():
+            try:
+                return await asyncio.wait_for(
                     find_investors(startup_data, analysis),
-                    return_exceptions=True,
-                ),
-                timeout=120,
+                    timeout=300,  # 5 min — Exa searches for competitors + investors
+                )
+            except asyncio.TimeoutError:
+                logger.error("[ORCHESTRATOR] Investor research timed out after 300s")
+                return {"competitors": [], "competitor_investors": [], "market_investors": [], "_error": "timeout"}
+            except Exception as e:
+                logger.error(f"[ORCHESTRATOR] Investor research failed: {e}", exc_info=True)
+                return {"competitors": [], "competitor_investors": [], "market_investors": [], "_error": str(e)}
+
+        try:
+            leads_result, investors_result = await asyncio.gather(
+                _run_leads(),
+                _run_investors(),
             )
-            # Unpack results — each may be a dict or an Exception
-            if isinstance(results[0], dict):
-                leads_data = results[0]
-            else:
-                logger.warning(f"Lead research failed: {results[0]}", exc_info=results[0])
-            if isinstance(results[1], dict):
-                investors_data = results[1]
-            else:
-                logger.warning(f"Investor research failed: {results[1]}", exc_info=results[1])
+
+            # Each result is always a dict (never an exception, thanks to wrappers)
+            leads_data = leads_result
+            investors_data = investors_result
 
             logger.info(
-                f"Lead research: {len(leads_data.get('personas', []))} personas, "
-                f"{len(leads_data.get('leads', []))} leads. "
+                f"[ORCHESTRATOR] Lead research: {len(leads_data.get('personas', []))} personas, "
+                f"{len(leads_data.get('leads', []))} leads"
+                f"{' (TIMED OUT)' if leads_data.get('_error') == 'timeout' else ''}"
+                f"{' (ERROR: ' + leads_data['_error'] + ')' if leads_data.get('_error') and leads_data['_error'] != 'timeout' else ''}. "
                 f"Investor research: {len(investors_data.get('competitors', []))} competitors, "
-                f"{len(investors_data.get('market_investors', []))} investors."
+                f"{len(investors_data.get('market_investors', []))} investors"
+                f"{' (TIMED OUT)' if investors_data.get('_error') == 'timeout' else ''}"
+                f"{' (ERROR: ' + investors_data['_error'] + ')' if investors_data.get('_error') and investors_data['_error'] != 'timeout' else ''}."
             )
-        except asyncio.TimeoutError:
-            logger.warning("Lead/investor research timed out (120s) — continuing without")
+
+            # Preserve error context for dashboard to show meaningful messages
+            # (dashboard will check _error and show appropriate UI)
+            if leads_data.get("_error"):
+                logger.warning(f"[ORCHESTRATOR] Leads had error: {leads_data['_error']}")
+            if investors_data.get("_error"):
+                logger.warning(f"[ORCHESTRATOR] Investors had error: {investors_data['_error']}")
+
         except Exception as e:
-            logger.warning(f"Lead/investor research failed (non-fatal): {e}", exc_info=True)
+            logger.warning(f"[ORCHESTRATOR] Lead/investor research failed (non-fatal): {e}", exc_info=True)
 
         # Attach enriched data to analysis for dashboard
         analysis["leads_research"] = leads_data

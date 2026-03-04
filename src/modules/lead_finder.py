@@ -6,9 +6,12 @@ Two-phase approach:
 2. Exa semantic search finds 10 real people matching those personas
 """
 
+import asyncio
 import json
 import logging
+import random
 import re
+import time as _time
 
 import httpx
 
@@ -16,54 +19,56 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Semaphore to avoid blasting Exa with too many concurrent requests
+_EXA_SEMAPHORE = asyncio.Semaphore(3)
+
+# Shared Exa timeout config — 60s per request, 10s connect
+_EXA_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+
+# LLM timeout — 90s per attempt (2 attempts max = 180s worst case)
+_LLM_TIMEOUT = httpx.Timeout(90.0, connect=15.0)
+
+# Use a fast model for persona generation (structured JSON, doesn't need Sonnet)
+_PERSONA_MODEL = "google/gemini-2.5-flash-preview"
+# Fallback to Sonnet if needed
+_PERSONA_MODEL_FALLBACK = "anthropic/claude-sonnet-4"
+
 
 async def find_leads(startup_data: str, analysis: dict) -> dict:
     """
     Generate personas and find real potential leads for a startup.
 
-    Returns:
-        {
-            "personas": [
-                {
-                    "name": "The Lonely Builder",
-                    "who": "Solo founder, 6-18 months in",
-                    "age_range": "26-38",
-                    "pain_signals": ["exact phrases they use"],
-                    "social_networks": {
-                        "primary": ["Twitter/X", "Reddit"],
-                        "secondary": ["Discord", "Telegram"]
-                    },
-                    "willingness_to_pay": "$20-100/mo",
-                    "trigger_events": ["just launched with zero traction"],
-                    "reachability": 8
-                }
-            ],
-            "leads": [
-                {
-                    "name": "John Doe",
-                    "title": "Founder @ StartupX",
-                    "url": "https://...",
-                    "source": "twitter/linkedin/blog",
-                    "relevance_signal": "Posted about needing advisors",
-                    "score": 8,
-                    "persona_match": "The Lonely Builder"
-                }
-            ]
-        }
+    Returns dict with "personas" and "leads" keys (always populated, possibly empty).
+    This function NEVER raises — all errors are caught and logged.
     """
     profile = analysis.get("company_profile", {})
     market = profile.get("market", "")
     one_liner = profile.get("one_liner", "")
     name = profile.get("name", "")
 
+    logger.info(f"[LEADS] Starting lead finder for '{name or 'unknown startup'}'")
+
     # Phase 1: Generate personas via LLM
-    personas = await _generate_personas(startup_data, analysis)
+    personas = []
+    try:
+        personas = await _generate_personas(startup_data, analysis)
+        logger.info(f"[LEADS] Generated {len(personas)} personas")
+    except Exception as e:
+        logger.error(f"[LEADS] Persona generation failed entirely: {e}", exc_info=True)
 
     # Phase 2: Find real leads via Exa
     leads = []
-    if settings.exa_api_key and personas:
-        leads = await _find_leads_via_exa(name, one_liner, market, personas)
+    if not settings.exa_api_key:
+        logger.warning("[LEADS] No EXA_API_KEY set — skipping lead search")
+    elif not personas:
+        logger.warning("[LEADS] No personas generated — skipping lead search")
+    else:
+        try:
+            leads = await _find_leads_via_exa(name, one_liner, market, personas)
+        except Exception as e:
+            logger.error(f"[LEADS] Exa lead search failed entirely: {e}", exc_info=True)
 
+    logger.info(f"[LEADS] Complete — {len(personas)} personas, {len(leads)} leads")
     return {
         "personas": personas,
         "leads": leads,
@@ -109,9 +114,12 @@ Pain signals should be REAL phrases people post online, not made-up ones."""
 
     try:
         text = await _call_llm(prompt)
-        return _parse_json_array(text)
+        personas = _parse_json_array(text)
+        if not personas:
+            logger.error("[LEADS] Persona generation returned empty array")
+        return personas
     except Exception as e:
-        logger.error(f"Persona generation failed: {e}")
+        logger.error(f"[LEADS] Persona generation failed: {e}", exc_info=True)
         return []
 
 
@@ -121,64 +129,168 @@ async def _find_leads_via_exa(
     market: str,
     personas: list[dict],
 ) -> list[dict]:
-    """Search Exa for real people matching the personas."""
+    """Search Exa for real people matching the personas — throttled parallel."""
+    t0 = _time.monotonic()
     leads = []
     seen_urls = set()
+
+    # Build all search tasks upfront
+    tasks = []
+    task_meta = []  # track which persona each task belongs to
 
     for persona in personas[:3]:
         queries = persona.get("search_queries", [])
         pain_signals = persona.get("pain_signals", [])
+        # Use top 2 search queries + top 1 pain signal per persona = max 9 total
+        search_terms = queries[:2] + pain_signals[:1]
 
-        # Use search queries from persona, plus pain signals
-        search_terms = queries[:2] + pain_signals[:2]
+        for query in search_terms[:3]:
+            tasks.append(_exa_search_throttled(query=query, num_results=5))
+            task_meta.append(persona)
 
-        for query in search_terms[:3]:  # max 3 searches per persona
-            try:
-                results = await _exa_search(
-                    query=query,
-                    num_results=5,
-                )
-                for r in results:
-                    url = r.get("url", "")
-                    if url in seen_urls:
-                        continue
-                    seen_urls.add(url)
+    logger.info(f"[LEADS] Launching {len(tasks)} Exa searches (max 3 concurrent)")
 
-                    # Extract person info from the result
-                    lead = _extract_lead_info(r, persona)
-                    if lead:
-                        leads.append(lead)
+    # Run all searches concurrently (semaphore limits actual concurrency)
+    results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
-            except Exception as e:
-                logger.warning(f"Exa lead search failed for query '{query[:50]}': {e}")
+    success_count = 0
+    fail_count = 0
+    for i, result in enumerate(results_list):
+        persona = task_meta[i]
+        if isinstance(result, Exception):
+            fail_count += 1
+            logger.warning(f"[LEADS] Exa search {i} failed: {type(result).__name__}: {result}")
+            continue
+        success_count += 1
+        for r in result:
+            url = r.get("url", "")
+            if url in seen_urls:
                 continue
+            seen_urls.add(url)
+            lead = _extract_lead_info(r, persona)
+            if lead:
+                leads.append(lead)
+
+    elapsed = _time.monotonic() - t0
+    logger.info(
+        f"[LEADS] Exa searches done in {elapsed:.1f}s — "
+        f"{success_count} succeeded, {fail_count} failed, {len(leads)} raw leads"
+    )
 
     # Sort by score, take top 10
     leads.sort(key=lambda x: x.get("score", 0), reverse=True)
     return leads[:10]
 
 
+async def _exa_search_throttled(query: str, num_results: int = 5) -> list[dict]:
+    """Exa search with concurrency throttle via semaphore."""
+    async with _EXA_SEMAPHORE:
+        return await _exa_search(query, num_results)
+
+
 async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
-    """Run an Exa semantic search with text content."""
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.exa.ai/search",
-            headers={
-                "x-api-key": settings.exa_api_key,
-                "Content-Type": "application/json",
-            },
-            json={
-                "query": query,
-                "numResults": num_results,
-                "type": "auto",
-                "contents": {
-                    "text": {"maxCharacters": 1000},
-                },
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("results", [])
+    """Run an Exa semantic search with text content. Retries on 429/5xx."""
+    if not settings.exa_api_key:
+        logger.warning("[LEADS] Exa search skipped — no API key")
+        return []
+
+    last_error = None
+    # Create client ONCE outside the retry loop to reuse connections
+    async with httpx.AsyncClient(timeout=_EXA_TIMEOUT) as client:
+        for attempt in range(3):
+            try:
+                logger.info(
+                    f"[LEADS] Exa search attempt {attempt+1}/3: {query[:80]}"
+                )
+                resp = await client.post(
+                    "https://api.exa.ai/search",
+                    headers={
+                        "x-api-key": settings.exa_api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "query": query,
+                        "numResults": num_results,
+                        "type": "auto",
+                        "contents": {
+                            "text": {"maxCharacters": 1000},
+                        },
+                    },
+                )
+
+                if resp.status_code == 429:
+                    wait = 2 ** (attempt + 1) + random.uniform(0, 2)
+                    logger.warning(
+                        f"[LEADS] Exa rate limited (429), backing off {wait:.1f}s "
+                        f"(attempt {attempt+1}/3) — query: {query[:60]}"
+                    )
+                    await asyncio.sleep(wait)
+                    last_error = "rate limited (429)"
+                    continue
+
+                if resp.status_code == 401:
+                    logger.error(
+                        f"[LEADS] Exa API 401 Unauthorized — check EXA_API_KEY. "
+                        f"Key starts with: {settings.exa_api_key[:8]}..."
+                    )
+                    return []
+
+                if resp.status_code >= 500:
+                    body = resp.text[:300]
+                    logger.warning(
+                        f"[LEADS] Exa server error {resp.status_code} "
+                        f"(attempt {attempt+1}/3): {body}"
+                    )
+                    last_error = f"HTTP {resp.status_code}: {body}"
+                    if attempt < 2:
+                        await asyncio.sleep(2 ** attempt + 1)
+                    continue
+
+                if resp.status_code >= 400:
+                    body = resp.text[:300]
+                    logger.error(
+                        f"[LEADS] Exa API {resp.status_code}: {body} — "
+                        f"query: {query[:60]}"
+                    )
+                    last_error = f"HTTP {resp.status_code}: {body}"
+                    # Client errors (4xx except 429) are not retryable
+                    return []
+
+                data = resp.json()
+                results = data.get("results", [])
+                logger.info(
+                    f"[LEADS] Exa returned {len(results)} results for: {query[:60]}"
+                )
+                return results
+
+            except httpx.TimeoutException:
+                last_error = "timeout"
+                logger.warning(
+                    f"[LEADS] Exa search timeout (attempt {attempt+1}/3): {query[:60]}"
+                )
+                if attempt < 2:
+                    await asyncio.sleep(2)
+            except httpx.ConnectError as e:
+                last_error = f"connect error: {e}"
+                logger.warning(
+                    f"[LEADS] Exa connect error (attempt {attempt+1}/3): {e}"
+                )
+                if attempt < 2:
+                    await asyncio.sleep(2)
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(
+                    f"[LEADS] Exa search error (attempt {attempt+1}/3): "
+                    f"{type(e).__name__}: {e}"
+                )
+                if attempt < 2:
+                    await asyncio.sleep(2)
+
+    logger.error(
+        f"[LEADS] Exa search failed after 3 attempts: {last_error} — "
+        f"query: {query[:80]}"
+    )
+    return []
 
 
 def _extract_lead_info(result: dict, persona: dict) -> dict | None:
@@ -229,49 +341,106 @@ def _extract_lead_info(result: dict, persona: dict) -> dict | None:
 
 
 async def _call_llm(prompt: str) -> str:
-    """Call LLM via OpenRouter or Anthropic."""
+    """Call LLM via OpenRouter or Anthropic — with retries.
+
+    Uses a fast model (Gemini Flash) first for speed, falls back to Sonnet.
+    Client is reused across retries to avoid connection overhead.
+    """
+    last_error = None
+
+    # Try OpenRouter first — fast model, then fallback model
     if settings.openrouter_api_key:
-        async with httpx.AsyncClient(timeout=90) as client:
-            resp = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.openrouter_api_key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://mckoutie.com",
-                },
-                json={
-                    "model": "anthropic/claude-sonnet-4",
-                    "max_tokens": 4000,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are mckoutie — a startup growth expert. Return valid JSON only.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                },
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                return data["choices"][0]["message"]["content"]
+        models_to_try = [_PERSONA_MODEL, _PERSONA_MODEL_FALLBACK]
+        async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
+            for model in models_to_try:
+                for attempt in range(2):  # 2 attempts per model (not 3)
+                    t0 = _time.monotonic()
+                    try:
+                        logger.info(
+                            f"[LEADS] LLM call attempt {attempt+1}/2 "
+                            f"via OpenRouter ({model.split('/')[-1]})"
+                        )
+                        resp = await client.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {settings.openrouter_api_key}",
+                                "Content-Type": "application/json",
+                                "HTTP-Referer": "https://mckoutie.com",
+                                "X-Title": "mckoutie",
+                            },
+                            json={
+                                "model": model,
+                                "max_tokens": 4000,
+                                "messages": [
+                                    {
+                                        "role": "system",
+                                        "content": "You are mckoutie — a startup growth expert. Return valid JSON only, no markdown wrapping.",
+                                    },
+                                    {"role": "user", "content": prompt},
+                                ],
+                            },
+                        )
+                        elapsed = _time.monotonic() - t0
 
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                            if content:
+                                logger.info(f"[LEADS] LLM responded in {elapsed:.1f}s ({len(content)} chars)")
+                                return content
+                            logger.warning(f"[LEADS] OpenRouter returned empty content after {elapsed:.1f}s")
+                            last_error = "empty response"
+                        elif resp.status_code == 429:
+                            wait = 3 + random.uniform(0, 3) * (attempt + 1)
+                            logger.warning(f"[LEADS] OpenRouter 429, backing off {wait:.1f}s")
+                            await asyncio.sleep(wait)
+                            last_error = "rate limited"
+                        else:
+                            body = resp.text[:500]
+                            logger.error(f"[LEADS] OpenRouter {resp.status_code} after {elapsed:.1f}s: {body}")
+                            last_error = f"HTTP {resp.status_code}: {body}"
+                            await asyncio.sleep(2 + random.uniform(0, 2))
+                    except httpx.TimeoutException:
+                        elapsed = _time.monotonic() - t0
+                        last_error = f"LLM timeout after {elapsed:.0f}s"
+                        logger.warning(f"[LEADS] OpenRouter timeout after {elapsed:.1f}s (attempt {attempt+1}/2)")
+                        await asyncio.sleep(2 + random.uniform(0, 2))
+                    except Exception as e:
+                        elapsed = _time.monotonic() - t0
+                        last_error = str(e)
+                        logger.warning(f"[LEADS] OpenRouter error after {elapsed:.1f}s: {e}")
+                        await asyncio.sleep(2 + random.uniform(0, 2))
+
+                # If fast model failed both attempts, try fallback model
+                if model == _PERSONA_MODEL:
+                    logger.info(f"[LEADS] Fast model failed, trying fallback ({_PERSONA_MODEL_FALLBACK})")
+
+    # Fallback to Anthropic direct
     if settings.anthropic_api_key:
-        import anthropic
-        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-        response = await client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
+        try:
+            logger.info("[LEADS] Falling back to Anthropic direct API")
+            import anthropic
+            aclient = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+            response = await aclient.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=4000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
+        except Exception as e:
+            last_error = str(e)
+            logger.error(f"[LEADS] Anthropic direct also failed: {e}")
 
-    raise RuntimeError("No LLM provider available")
+    raise RuntimeError(f"No LLM provider succeeded: {last_error}")
 
 
 def _parse_json_array(text: str) -> list[dict]:
     """Extract JSON array from LLM response."""
+    # Try direct parse
     try:
-        return json.loads(text)
+        result = json.loads(text)
+        if isinstance(result, list):
+            return result
     except json.JSONDecodeError:
         pass
 
@@ -279,7 +448,9 @@ def _parse_json_array(text: str) -> list[dict]:
     match = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
     if match:
         try:
-            return json.loads(match.group(1))
+            result = json.loads(match.group(1))
+            if isinstance(result, list):
+                return result
         except json.JSONDecodeError:
             pass
 
@@ -288,9 +459,19 @@ def _parse_json_array(text: str) -> list[dict]:
     end = text.rfind("]")
     if start != -1 and end != -1:
         try:
-            return json.loads(text[start : end + 1])
+            result = json.loads(text[start : end + 1])
+            if isinstance(result, list):
+                return result
         except json.JSONDecodeError:
-            pass
+            # Try fixing trailing commas
+            candidate = text[start : end + 1]
+            cleaned = re.sub(r",\s*([}\]])", r"\1", candidate)
+            try:
+                result = json.loads(cleaned)
+                if isinstance(result, list):
+                    return result
+            except json.JSONDecodeError:
+                pass
 
-    logger.error(f"Failed to parse persona JSON: {text[:500]}")
+    logger.error(f"[LEADS] Failed to parse persona JSON. First 500 chars: {text[:500]}")
     return []
