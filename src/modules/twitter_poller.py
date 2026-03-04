@@ -16,9 +16,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import tweepy
-
 from src.config import settings
+from src.modules.twitter_client import TwitterClient, TwitterCredentials
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +64,13 @@ class AnalysisRequest:
 
 class TwitterPoller:
     def __init__(self):
-        # Use pure OAuth 1.0a — bearer token causes Tweepy to pick app-auth
-        # for some endpoints, which fails on pay-per-use tier.
-        self.client = tweepy.Client(
-            consumer_key=settings.twitter_api_key,
-            consumer_secret=settings.twitter_api_secret,
+        creds = TwitterCredentials(
+            api_key=settings.twitter_api_key,
+            api_secret=settings.twitter_api_secret,
             access_token=settings.twitter_access_token,
             access_token_secret=settings.twitter_access_token_secret,
-            wait_on_rate_limit=True,
         )
+        self.client = TwitterClient(creds)
         self.last_seen_id: str | None = self._load_state()
 
     def _load_state(self) -> str | None:
@@ -132,125 +129,106 @@ class TwitterPoller:
         requests = []
 
         try:
-            bot_id = self._get_bot_user_id()
-            logger.info(f"Polling mentions for bot user ID: {bot_id} (since_id: {self.last_seen_id})")
-
-            kwargs = {
-                "expansions": ["author_id"],
-                "tweet_fields": ["created_at", "text", "author_id"],
-                "user_fields": ["username"],
-                "max_results": 20,
-            }
-            if self.last_seen_id:
-                kwargs["since_id"] = self.last_seen_id
-
-            response = self.client.get_users_mentions(
-                id=bot_id,
-                **kwargs,
+            logger.info(
+                f"Polling mentions for @{self.client.username} "
+                f"(since_id: {self.last_seen_id})"
             )
 
-            logger.info(f"Twitter API response: data={response.data is not None}, errors={getattr(response, 'errors', None)}")
+            response = self.client.get_mentions(
+                since_id=self.last_seen_id,
+                max_results=20,
+            )
 
-            if not response.data:
+            # Handle errors
+            if response.get("rate_limited"):
+                logger.warning("Rate limited — will retry next cycle")
                 return []
+
+            if response.get("error"):
+                logger.error(
+                    f"Mentions API returned {response['error']}: "
+                    f"{response.get('detail', '')}"
+                )
+                return []
+
+            tweets = response.get("data", [])
+            if not tweets:
+                return []
+
+            logger.info(f"Got {len(tweets)} mention(s)")
 
             # Build user lookup from includes
             users = {}
-            if response.includes and "users" in response.includes:
-                for user in response.includes["users"]:
-                    users[user.id] = user.username
+            includes = response.get("includes", {})
+            for user in includes.get("users", []):
+                users[user["id"]] = user["username"]
 
-            for tweet in response.data:
+            for tweet in tweets:
+                tweet_id = tweet["id"]
+                author_id = tweet.get("author_id", "")
+                text = tweet.get("text", "")
+
                 # Update high-water mark
-                if not self.last_seen_id or int(tweet.id) > int(self.last_seen_id):
-                    self.last_seen_id = str(tweet.id)
+                if not self.last_seen_id or int(tweet_id) > int(self.last_seen_id):
+                    self.last_seen_id = str(tweet_id)
 
-                logger.info(f"Mention received [{tweet.id}]: {tweet.text[:200]}")
+                logger.info(f"Mention [{tweet_id}]: {text[:200]}")
 
-                if not self._is_trigger(tweet.text):
-                    logger.info(f"Skipping non-trigger tweet: {tweet.id}")
+                if not self._is_trigger(text):
+                    logger.info(f"Skipping non-trigger tweet: {tweet_id}")
                     continue
 
-                url, handle = self._extract_target(tweet.text)
+                url, handle = self._extract_target(text)
 
                 req = AnalysisRequest(
-                    tweet_id=str(tweet.id),
-                    author_id=str(tweet.author_id),
-                    author_username=users.get(tweet.author_id, "unknown"),
-                    text=tweet.text,
+                    tweet_id=str(tweet_id),
+                    author_id=str(author_id),
+                    author_username=users.get(author_id, "unknown"),
+                    text=text,
                     target_url=url,
                     target_twitter_handle=handle,
-                    created_at=str(tweet.created_at) if tweet.created_at else None,
+                    created_at=tweet.get("created_at"),
                 )
 
                 if req.has_target:
                     requests.append(req)
-                    logger.info(f"New request from @{req.author_username}: {req.target_display}")
+                    logger.info(
+                        f"New request from @{req.author_username}: "
+                        f"{req.target_display}"
+                    )
                 else:
                     logger.warning(
-                        f"Trigger found but no target in tweet {tweet.id} from @{users.get(tweet.author_id, '?')}"
+                        f"Trigger found but no target in tweet {tweet_id} "
+                        f"from @{users.get(author_id, '?')}"
                     )
 
-        except tweepy.TooManyRequests:
-            logger.warning("Rate limited — backing off 60s")
-            time.sleep(60)
-        except tweepy.Forbidden as e:
-            logger.error(
-                f"Twitter 403 Forbidden: {e}. "
-                "Mention reading requires pay-per-use credits. "
-                "Check your balance at developer.x.com or ensure app permissions include Read+Write."
-            )
-        except tweepy.Unauthorized as e:
-            logger.error(f"Twitter 401 Unauthorized: {e}. Check your API keys are correct.")
-        except tweepy.TwitterServerError as e:
-            logger.error(f"Twitter server error: {e}")
+            # Persist state after successful poll
+            if self.last_seen_id:
+                self._save_state()
+
         except Exception as e:
             logger.error(f"Error polling mentions: {e}")
 
         return requests
 
-    def _get_bot_user_id(self) -> str:
-        """Get the authenticated user's ID (cached after first call)."""
-        if not hasattr(self, "_bot_user_id"):
-            me = self.client.get_me()
-            self._bot_user_id = str(me.data.id)
-        return self._bot_user_id
+    def reply_to_tweet(
+        self, tweet_id: str, text: str, media_ids: list[str] | None = None
+    ) -> str | None:
+        """Reply to a tweet, optionally with media. Returns the reply tweet ID or None."""
+        result = self.client.create_tweet(text, reply_to=tweet_id, media_ids=media_ids)
+        if result:
+            return result["id"]
+        return None
 
-    def reply_to_tweet(self, tweet_id: str, text: str) -> str | None:
-        """Reply to a tweet. Returns the reply tweet ID or None on failure."""
-        try:
-            response = self.client.create_tweet(
-                text=text,
-                in_reply_to_tweet_id=tweet_id,
-            )
-            return str(response.data["id"])
-        except Exception as e:
-            logger.error(f"Failed to reply to {tweet_id}: {e}")
-            return None
+    def upload_media(self, file_path: str) -> str | None:
+        """Upload media and return media_id_string."""
+        return self.client.upload_media(file_path)
 
     def reply_thread(self, tweet_id: str, texts: list[str]) -> list[str]:
         """Reply with a thread of tweets. Returns list of reply IDs."""
-        reply_ids = []
-        parent_id = tweet_id
-
-        for text in texts:
-            reply_id = self.reply_to_tweet(parent_id, text)
-            if reply_id:
-                reply_ids.append(reply_id)
-                parent_id = reply_id
-            else:
-                break
-
-        return reply_ids
+        return self.client.reply_thread(tweet_id, texts)
 
     def send_dm(self, user_id: str, text: str) -> bool:
-        """Send a DM to a user."""
-        try:
-            self.client.create_direct_message(
-                participant_id=user_id,
-                text=text,
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Failed to DM user {user_id}: {e}")
-            return False
+        """Send a DM to a user. Not yet implemented for raw client."""
+        logger.warning("DMs not yet implemented in raw OAuth client")
+        return False

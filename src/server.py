@@ -1,26 +1,31 @@
 """
-FastAPI server — serves reports and handles Stripe webhooks.
+FastAPI server — serves reports, handles Stripe webhooks, and Twitter OAuth.
 
 Endpoints:
-  GET  /                        — landing page
-  GET  /report/{report_id}      — view report (teaser or full depending on payment)
-  POST /webhook/stripe          — Stripe payment webhook
-  GET  /health                  — health check
-  GET  /stats                   — basic stats
+  GET  /                            — landing page
+  GET  /report/{report_id}          — view report (login-gated for subscribers)
+  POST /webhook/stripe              — Stripe payment webhook
+  GET  /auth/twitter                — initiate Twitter OAuth 2.0 login
+  GET  /auth/twitter/callback       — handle OAuth callback
+  GET  /auth/logout                 — clear session
+  GET  /health                      — health check
+  GET  /stats                       — basic stats
 """
 
 import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import settings
-from src.modules import payments, report_store
+from src.modules import auth, payments, report_store
 from src.analysis.report_generator import generate_report_html
+from src.analysis.dashboard_renderer import render_dashboard
 
 REPORTS_DIR = Path(__file__).parent.parent / "reports"
 
@@ -69,27 +74,27 @@ async def landing():
     <div class="container">
         <h1>mckoutie</h1>
         <p class="tagline">McKinsey at home</p>
-        <p>AI startup consulting for $100 instead of $100K.</p>
+        <p>AI startup consulting for $39/mo instead of $100K.</p>
 
         <div class="how">
             <h2>How it works</h2>
             <p>1. Tweet <code>@mckoutie analyse my startup https://yoursite.com</code></p>
             <p>2. Or tag a company: <code>@mckoutie analyse my startup @company</code></p>
             <p>3. Get a free teaser thread with your top 3 growth channels</p>
-            <p>4. Pay $100 for the full 19-channel strategy brief</p>
+            <p>4. Subscribe for $39/mo for the full strategy dashboard</p>
         </div>
 
-        <p class="price">Full brief: $100 (you'd pay a consultant $5K+ for this)</p>
+        <p class="price">Starter: $39/mo | Growth: $200/mo | Enterprise: custom</p>
 
         <p>What you get:</p>
         <div class="how">
             <p>- 19-channel traction analysis scored for YOUR startup</p>
             <p>- Bullseye framework: top 3 channels to test NOW</p>
             <p>- 90-day action plan with weekly milestones</p>
-            <p>- Budget allocation recommendations</p>
-            <p>- Risk matrix with mitigations</p>
-            <p>- Competitive moat analysis</p>
-            <p>- A brutally honest hot take</p>
+            <p>- Budget allocation + risk matrix</p>
+            <p>- 3 customer personas + 10 potential leads</p>
+            <p>- Investor intelligence (competitor funding + VCs in your space)</p>
+            <p>- Living report with monthly market updates</p>
         </div>
 
         <p style="color: var(--muted); margin-top: 2rem; font-size: 0.8rem;">
@@ -100,9 +105,54 @@ async def landing():
 </html>"""
 
 
+@app.get("/auth/twitter")
+async def auth_twitter(request: Request, redirect: str = "/"):
+    """Initiate Twitter OAuth 2.0 login."""
+    auth_url, state = auth.get_twitter_auth_url(redirect_after=redirect)
+    return RedirectResponse(auth_url)
+
+
+@app.get("/auth/twitter/callback")
+async def auth_twitter_callback(request: Request, code: str = "", state: str = ""):
+    """Handle Twitter OAuth callback."""
+    if not code or not state:
+        return HTMLResponse("<h1>Login failed</h1><p>Missing code or state.</p>", status_code=400)
+
+    user_info = await auth.exchange_code(code, state)
+    if not user_info:
+        return HTMLResponse("<h1>Login failed</h1><p>Could not verify your Twitter account.</p>", status_code=400)
+
+    # Create session JWT
+    token = auth.create_jwt({
+        "twitter_id": user_info["twitter_id"],
+        "username": user_info["username"],
+        "name": user_info["name"],
+    })
+
+    redirect_to = user_info.get("redirect_after", "/")
+    response = RedirectResponse(redirect_to)
+    response.set_cookie(
+        "mckoutie_session",
+        token,
+        max_age=30 * 24 * 3600,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/auth/logout")
+async def auth_logout(request: Request, redirect: str = "/"):
+    """Clear session cookie."""
+    response = RedirectResponse(redirect)
+    response.delete_cookie("mckoutie_session")
+    return response
+
+
 @app.get("/report/{report_id}", response_class=HTMLResponse)
-async def view_report(report_id: str, paid: str | None = None):
-    """View a report — shows teaser or full based on payment status."""
+async def view_report(request: Request, report_id: str, paid: str | None = None):
+    """View a report — dashboard with tier-based content gating."""
     record = report_store.load_record(report_id)
 
     if not record:
@@ -120,22 +170,66 @@ async def view_report(report_id: str, paid: str | None = None):
             status_code=500,
         )
 
-    # Check if paid
-    if record.status == "paid":
-        # Serve full report
-        report_path = REPORTS_DIR / report_id / "report.md"
-        if report_path.exists():
-            md_content = report_path.read_text()
-            html = generate_report_html(md_content, record.startup_name)
-            return HTMLResponse(content=html)
+    # Load analysis data for dashboard
+    analysis = {}
+    analysis_path = REPORTS_DIR / report_id / "analysis.json"
+    if analysis_path.exists():
+        try:
+            analysis = json.loads(analysis_path.read_text())
+        except Exception:
+            pass
 
-    # Not paid — show teaser/paywall
-    return HTMLResponse(content=_paywall_page(record))
+    # Determine tier based on subscription status + login
+    tier = "free"
+    checkout_url = record.checkout_url or "#"
+    upgrade_url = "#"
+
+    if record.status in ("active", "paid"):
+        # Get logged-in user from session cookie
+        session_cookie = request.cookies.get("mckoutie_session")
+        user = auth.get_session_user(session_cookie)
+
+        if not user:
+            # Not logged in — show login prompt
+            login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
+            return HTMLResponse(content=_login_page(record, login_url))
+
+        # Check if this user owns the report (requester or subscriber)
+        user_twitter_id = user.get("twitter_id", "")
+        is_owner = (
+            user_twitter_id == record.author_id
+            or user_twitter_id == record.subscriber_twitter_id
+        )
+
+        if not is_owner:
+            return HTMLResponse(content=_not_your_report_page(record, user))
+
+        # Authorized — determine tier from record
+        tier = record.tier or "starter"
+
+        # Generate upgrade URL for starter users
+        if tier == "starter" and settings.has_payments:
+            upgrade_url = payments.create_upgrade_session(
+                report_id=report_id,
+                startup_name=record.startup_name,
+                customer_id=record.customer_id,
+            ) or "#"
+
+    # Render dashboard with appropriate tier
+    html = render_dashboard(
+        analysis=analysis,
+        startup_name=record.startup_name,
+        report_id=report_id,
+        tier=tier,
+        checkout_url=checkout_url,
+        upgrade_url=upgrade_url,
+    )
+    return HTMLResponse(content=html)
 
 
 @app.post("/webhook/stripe")
 async def stripe_webhook(request: Request):
-    """Handle Stripe payment webhooks."""
+    """Handle Stripe subscription lifecycle webhooks."""
     payload = await request.body()
     sig = request.headers.get("stripe-signature", "")
 
@@ -143,17 +237,48 @@ async def stripe_webhook(request: Request):
     if not event:
         return JSONResponse({"error": "Invalid signature"}, status_code=400)
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        report_id = session.get("metadata", {}).get("report_id")
+    event_type = event["type"]
+    obj = event["data"]["object"]
+
+    if event_type == "checkout.session.completed":
+        # New subscription started
+        metadata = obj.get("metadata", {})
+        report_id = metadata.get("report_id")
+        twitter_id = metadata.get("twitter_id", "")
+        subscription_id = obj.get("subscription", "")
+        customer_id = obj.get("customer", "")
+        tier = metadata.get("tier", "starter")
 
         if report_id:
             report_store.update_status(
                 report_id,
-                "paid",
+                "active",
                 paid_at=datetime.now(tz=timezone.utc).isoformat(),
+                subscription_id=subscription_id,
+                customer_id=customer_id,
+                subscriber_twitter_id=twitter_id,
+                tier=tier,
             )
-            logger.info(f"Payment received for report {report_id}")
+            logger.info(f"Subscription started for report {report_id} (tier={tier})")
+
+    elif event_type == "customer.subscription.deleted":
+        # Subscription canceled
+        metadata = obj.get("metadata", {})
+        report_id = metadata.get("report_id")
+        if report_id:
+            report_store.update_status(report_id, "canceled")
+            logger.info(f"Subscription canceled for report {report_id}")
+
+    elif event_type == "invoice.payment_failed":
+        # Payment failed on renewal
+        sub_id = obj.get("subscription", "")
+        if sub_id:
+            # Find report by subscription ID and mark as past_due
+            for record in report_store.list_reports(status="active"):
+                if record.subscription_id == sub_id:
+                    report_store.update_status(record.report_id, "ready")
+                    logger.warning(f"Payment failed for report {record.report_id}")
+                    break
 
     return JSONResponse({"status": "ok"})
 
@@ -173,6 +298,65 @@ async def stats():
         "analyzing": len([r for r in all_reports if r.status == "analyzing"]),
         "failed": len([r for r in all_reports if r.status == "failed"]),
     }
+
+
+def _login_page(record: report_store.ReportRecord, login_url: str) -> str:
+    return f"""<!DOCTYPE html>
+<html><head>
+    <meta charset="UTF-8">
+    <title>mckoutie — Log in to view report</title>
+    <style>
+        body {{ font-family: 'SF Mono', monospace; background: #0a0a0a; color: #e0e0e0;
+               display: flex; justify-content: center; align-items: center;
+               min-height: 100vh; padding: 2rem; }}
+        .container {{ text-align: center; max-width: 500px; }}
+        h1 {{ color: #00d4ff; margin-bottom: 0.5rem; }}
+        p {{ color: #888; margin: 1rem 0; line-height: 1.6; }}
+        .login-btn {{ display: inline-block; background: #1da1f2; color: #fff;
+                      padding: 14px 32px; font-size: 1rem; font-weight: bold;
+                      text-decoration: none; border-radius: 6px; margin: 1.5rem 0;
+                      font-family: monospace; }}
+        .login-btn:hover {{ background: #0d8bd9; }}
+        .note {{ color: #444; font-size: 0.8rem; margin-top: 2rem; }}
+    </style>
+</head><body>
+    <div class="container">
+        <h1>mckoutie</h1>
+        <p>Strategy Brief for <strong style="color: #00d4ff;">{record.startup_name}</strong></p>
+        <p>Log in with the Twitter account that requested this report to view it.</p>
+        <a class="login-btn" href="{login_url}">Log in with Twitter / X</a>
+        <p class="note">We only verify your identity. We don't post or read your DMs.</p>
+    </div>
+</body></html>"""
+
+
+def _not_your_report_page(record: report_store.ReportRecord, user: dict) -> str:
+    return f"""<!DOCTYPE html>
+<html><head>
+    <meta charset="UTF-8">
+    <title>mckoutie — Access denied</title>
+    <style>
+        body {{ font-family: 'SF Mono', monospace; background: #0a0a0a; color: #e0e0e0;
+               display: flex; justify-content: center; align-items: center;
+               min-height: 100vh; padding: 2rem; }}
+        .container {{ text-align: center; max-width: 500px; }}
+        h1 {{ color: #ff6b35; margin-bottom: 0.5rem; }}
+        p {{ color: #888; margin: 1rem 0; line-height: 1.6; }}
+        a {{ color: #00d4ff; }}
+    </style>
+</head><body>
+    <div class="container">
+        <h1>Not your report</h1>
+        <p>You're logged in as <strong style="color: #00d4ff;">@{user.get('username', '?')}</strong>,
+           but this report belongs to <strong>@{record.author_username}</strong>.</p>
+        <p>Want your own analysis?
+           <a href="https://x.com/intent/tweet?text=@mckoutie%20analyse%20my%20startup%20" target="_blank">
+           Tweet @mckoutie</a></p>
+        <p style="margin-top: 2rem;">
+            <a href="/auth/logout?redirect=/report/{record.report_id}">Log in with a different account</a>
+        </p>
+    </div>
+</body></html>"""
 
 
 def _processing_page(record: report_store.ReportRecord) -> str:
@@ -309,9 +493,10 @@ def _paywall_page(record: report_store.ReportRecord) -> str:
     </div>
 
     <div style="text-align: center;">
-        <p class="price">${settings.report_price_usd} — one-time payment</p>
-        <p style="color: #666;">You'd pay a consultant $5,000+ for this.</p>
-        <a class="cta" href="{checkout_url}">Unlock Full Brief</a>
+        <p class="price">${settings.report_price_usd}/mo — ongoing market intelligence</p>
+        <p style="color: #666;">Your report stays alive with fresh insights every month. Cancel anytime.</p>
+        <a class="cta" href="{checkout_url}">Subscribe &amp; Unlock</a>
+        <p style="color: #444; font-size: 0.75rem; margin-top: 0.5rem;">You'll log in with Twitter after payment to access your report.</p>
     </div>
 
     <p style="color: #333; font-size: 0.8rem; margin-top: 3rem;">

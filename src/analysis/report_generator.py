@@ -1,7 +1,7 @@
 """
 Report generator — turns analysis JSON into two outputs:
 1. TEASER: 3-4 tweet thread (public, free) — the hook
-2. FULL BRIEF: markdown report → HTML/PDF (paywalled at $100)
+2. FULL BRIEF: markdown report → HTML (paywalled at $39/mo subscription)
 """
 
 import hashlib
@@ -80,15 +80,15 @@ def generate_teaser_thread(analysis: dict) -> list[str]:
             first_para = first_para[:257] + "..."
         tweet3 = f"The real insight:\n\n{first_para}"
 
-    # Tweet 4: The CTA
+    # Tweet 4: The CTA — link goes to mckoutie.com/report/{id}
     tweet4 = (
         f"Full 19-channel analysis for {name}:\n"
         f"- 90-day action plan\n"
         f"- Budget allocation\n"
         f"- Risk matrix\n"
         f"- Specific tactics per channel\n\n"
-        f"$100 for the full brief (you'd pay a consultant $5K for this)\n\n"
-        f"{{payment_link}}"  # Placeholder — filled by orchestrator
+        f"${settings.report_price_usd}/mo — living report with monthly updates\n\n"
+        f"{{report_link}}"  # Placeholder — filled by orchestrator with mckoutie.com URL
     )
 
     # Clean up — ensure each tweet is under 280 chars

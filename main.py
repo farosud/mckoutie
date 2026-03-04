@@ -14,6 +14,7 @@ import uvicorn
 
 from src.config import settings
 from src.modules.twitter_poller import TwitterPoller
+from src.modules.market_updater import update_loop
 from src.orchestrator import handle_request
 
 logging.basicConfig(
@@ -169,6 +170,11 @@ async def main():
         logger.info(f"  Polling:  every {settings.poll_interval_seconds}s")
     else:
         logger.warning("Twitter polling DISABLED — use CLI mode: python main.py analyze <url>")
+
+    # Always run the market intelligence update loop
+    if settings.has_llm:
+        tasks.append(update_loop())
+        logger.info("  Updates:  active (checking every 6h, updating every 7d)")
 
     await asyncio.gather(*tasks)
 
