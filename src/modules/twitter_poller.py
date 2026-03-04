@@ -103,6 +103,9 @@ class TwitterPoller:
         requests = []
 
         try:
+            bot_id = self._get_bot_user_id()
+            logger.info(f"Polling mentions for bot user ID: {bot_id} (since_id: {self.last_seen_id})")
+
             kwargs = {
                 "expansions": ["author_id"],
                 "tweet_fields": ["created_at", "text", "author_id"],
@@ -113,9 +116,11 @@ class TwitterPoller:
                 kwargs["since_id"] = self.last_seen_id
 
             response = self.client.get_users_mentions(
-                id=self._get_bot_user_id(),
+                id=bot_id,
                 **kwargs,
             )
+
+            logger.info(f"Twitter API response: data={response.data is not None}, errors={getattr(response, 'errors', None)}")
 
             if not response.data:
                 return []
