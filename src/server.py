@@ -565,13 +565,261 @@ async def auth_logout(request: Request, redirect: str = "/"):
     return response
 
 
+def _mock_analysis() -> dict:
+    """Comprehensive mock data for testing dashboard layout."""
+    return {
+        "company_profile": {
+            "name": "Linear",
+            "one_liner": "AI-powered project management platform purpose-built for modern product development teams",
+            "stage": "scaling",
+            "estimated_size": "medium (6-20)",
+            "market": "Product development teams at tech companies",
+            "business_model": "SaaS subscription, $8-50+ per user/month",
+            "strengths": [
+                "Product-market fit with 20,000+ teams",
+                "First-mover advantage in AI-native project management",
+                "Best-in-class design and developer experience",
+                "Strong word-of-mouth in engineering communities",
+                "Clear differentiation with AI agent workflows"
+            ],
+            "weaknesses": [
+                "Competing against Jira, Asana, Monday.com",
+                "Heavy dependence on technical teams",
+                "AI features still feel early/experimental",
+                "Pricing pressure from free alternatives"
+            ],
+            "unique_angle": "The only PM tool designed from the ground up for human-AI collaboration"
+        },
+        "executive_summary": "Linear has achieved genuine product-market fit with 20,000+ teams. But they're at a critical inflection point. Their AI-native approach is their superpower, but also their biggest risk if they can't articulate the value to mainstream buyers. The strategy should focus on: 1) Solidifying their position with engineering teams, 2) Expanding into product and design roles, and 3) Building enterprise sales motion for teams ready to go all-in on AI workflows.",
+        "channel_analysis": [
+            {"channel": "Developer Communities", "score": 10, "effort": "medium", "timeline": "weeks", "budget": "$2K-5K",
+             "specific_ideas": ["Launch Linear API hackathon with AI agent integration prizes", "Partner with Y Combinator for portfolio onboarding", "Build open-source Linear CLI examples"],
+             "first_move": "Launch a Linear API hackathon with $50K in prizes for best AI agent integrations",
+             "why_or_why_not": "This is Linear's bread and butter — developers already love them",
+             "killer_insight": "Focus on engineering managers, not individual devs — they mandate tool adoption"},
+            {"channel": "Content Marketing", "score": 9, "effort": "high", "timeline": "months", "budget": "$10K-15K",
+             "specific_ideas": ["Weekly 'AI Development' newsletter", "Case studies showing 40%+ velocity improvements", "'State of Product Development' annual report"],
+             "first_move": "Launch weekly email series profiling how top companies use AI in development",
+             "why_or_why_not": "Linear's audience is hungry for tactical AI workflow content",
+             "killer_insight": "Don't just talk about Linear — become the thought leader on AI-human collaboration"},
+            {"channel": "Community Building", "score": 9, "effort": "high", "timeline": "months", "budget": "$8K-20K",
+             "specific_ideas": ["Create 'Linear AI Pioneers' community", "Monthly virtual events on AI development", "Certification program for Linear AI workflows"],
+             "first_move": "Launch 'Linear AI Collective' Slack community",
+             "why_or_why_not": "Perfect fit for developer-centric audience, creates retention",
+             "killer_insight": "Build the definitive community for AI-powered product development"},
+            {"channel": "Partnerships & Integrations", "score": 9, "effort": "high", "timeline": "months", "budget": "$5K-20K",
+             "specific_ideas": ["Deep Figma integration", "Native Slack workflows", "GitHub Apps marketplace"],
+             "first_move": "Build comprehensive Figma plugin for design-dev handoff",
+             "why_or_why_not": "Integrations expand Linear beyond engineering",
+             "killer_insight": "Focus on integrations that bring non-technical roles into Linear"},
+            {"channel": "Direct Sales", "score": 8, "effort": "high", "timeline": "months", "budget": "$25K-50K",
+             "specific_ideas": ["Hire enterprise AEs focused on Series B+ companies", "Create 'AI Readiness Assessment'", "Pilot program for AI development practices"],
+             "first_move": "Hire one enterprise AE and create 'AI Development Maturity' assessment",
+             "why_or_why_not": "Necessary for $50K+ deals",
+             "killer_insight": "Sell AI transformation, not just another PM tool"},
+            {"channel": "Product Hunt & Tech Publications", "score": 8, "effort": "medium", "timeline": "weeks", "budget": "$3K-8K",
+             "specific_ideas": ["Launch AI features on Product Hunt", "Pitch TechCrunch", "Submit to developer tool awards"],
+             "first_move": "Coordinate Product Hunt launch for next major AI feature",
+             "why_or_why_not": "Tech press loves AI stories and Linear has genuine innovation",
+             "killer_insight": "Time announcements with broader AI news cycles"},
+            {"channel": "Conferences & Events", "score": 8, "effort": "high", "timeline": "months", "budget": "$15K-30K",
+             "specific_ideas": ["Sponsor DevOps conferences", "Host 'AI in Product' meetups", "Booth at GitHub Universe"],
+             "first_move": "Sponsor and speak at next major DevOps conference",
+             "why_or_why_not": "High-impact for enterprise prospects",
+             "killer_insight": "Create hands-on AI workflow experiences, don't just sponsor"},
+            {"channel": "Sales Prospecting", "score": 8, "effort": "high", "timeline": "weeks", "budget": "$15K-30K",
+             "specific_ideas": ["Cold outreach to CTOs at fast-growing companies", "LinkedIn prospecting", "Account-based marketing for top 100 targets"],
+             "first_move": "Create targeted LinkedIn campaign reaching CTOs at Series B+ companies",
+             "why_or_why_not": "Essential for enterprise growth",
+             "killer_insight": "Lead with AI transformation consulting, not tool sales"},
+            {"channel": "Search Engine Marketing", "score": 7, "effort": "medium", "timeline": "weeks", "budget": "$8K-15K",
+             "specific_ideas": ["Target 'Jira alternatives for AI teams'", "Retargeting campaigns"],
+             "first_move": "Launch Google Ads targeting 'Jira alternative' with AI landing page",
+             "why_or_why_not": "Expensive but necessary for high-intent searches",
+             "killer_insight": "Don't compete on generic PM keywords — own 'AI-powered project management'"},
+            {"channel": "Email Marketing", "score": 7, "effort": "medium", "timeline": "weeks", "budget": "$3K-8K",
+             "specific_ideas": ["Onboarding sequence for AI features", "Segmented campaigns by role"],
+             "first_move": "Rebuild onboarding to feature AI agent setup in week 1",
+             "why_or_why_not": "Essential for activation and retention",
+             "killer_insight": "Most customers aren't using Linear's full AI capabilities"},
+            {"channel": "Traditional PR", "score": 7, "effort": "medium", "timeline": "months", "budget": "$8K-20K",
+             "specific_ideas": ["Pitch AI transforming software development", "Position founders as thought leaders"],
+             "first_move": "Hire tech-focused PR agency, pitch '25,000 teams using AI' story",
+             "why_or_why_not": "Important for credibility and enterprise sales",
+             "killer_insight": "Pitch the broader AI development story with Linear as the example"},
+            {"channel": "Business Development", "score": 7, "effort": "high", "timeline": "months", "budget": "$10K-25K",
+             "specific_ideas": ["Partner with Cursor/GitHub Copilot", "Joint go-to-market with Figma"],
+             "first_move": "Negotiate partnership with Cursor for bundled AI workflow",
+             "why_or_why_not": "High potential but requires relationship building",
+             "killer_insight": "Focus on partnerships that expand into non-technical roles"},
+            {"channel": "Webinars & Online Events", "score": 7, "effort": "medium", "timeline": "weeks", "budget": "$3K-8K",
+             "specific_ideas": ["Monthly 'AI Development Workshop'", "Executive briefings", "Joint webinars with Figma/GitHub"],
+             "first_move": "Launch monthly 'AI Development Masterclass' webinar series",
+             "why_or_why_not": "Good for lead generation and explaining AI value",
+             "killer_insight": "Focus on education rather than pitching"},
+            {"channel": "Social Media Marketing", "score": 6, "effort": "medium", "timeline": "weeks", "budget": "$2K-5K",
+             "specific_ideas": ["Twitter threads showing AI agents in action", "LinkedIn content for CTOs"],
+             "first_move": "Start weekly Twitter threads showcasing customer AI workflows",
+             "why_or_why_not": "Good for brand building, won't drive immediate enterprise sales",
+             "killer_insight": "Twitter for developers, LinkedIn for executives — don't spread thin"},
+            {"channel": "Influencer Marketing", "score": 6, "effort": "medium", "timeline": "weeks", "budget": "$5K-15K",
+             "specific_ideas": ["Partner with developer YouTubers", "Sponsor dev newsletters"],
+             "first_move": "Reach out to top 10 developer YouTube channels",
+             "why_or_why_not": "Effective for awareness, hard to measure direct impact",
+             "killer_insight": "Focus on productivity/AI influencers, not generic tech reviewers"},
+            {"channel": "Unconventional Marketing", "score": 6, "effort": "medium", "timeline": "weeks", "budget": "$3K-10K",
+             "specific_ideas": ["'Productivity Olympics' comparing human vs AI+human teams", "Public real-time AI metrics dashboard"],
+             "first_move": "Launch public leaderboard of AI collaboration metrics",
+             "why_or_why_not": "Could create buzz if executed well",
+             "killer_insight": "Make AI capabilities tangible and visible"},
+            {"channel": "Viral Marketing", "score": 5, "effort": "low", "timeline": "weeks", "budget": "$1K-3K",
+             "specific_ideas": ["Shareable demos of AI agents fixing bugs", "AI Development Challenge with leaderboards"],
+             "first_move": "Create shareable widget showing team's AI development stats",
+             "why_or_why_not": "Linear isn't naturally viral, but AI demos could be",
+             "killer_insight": "Make AI workflows so impressive developers want to show them off"},
+            {"channel": "Trade Shows", "score": 5, "effort": "high", "timeline": "months", "budget": "$20K-40K",
+             "specific_ideas": ["Exhibit at GitHub Universe, AWS re:Invent", "Interactive AI demos for booth visitors"],
+             "first_move": "Book booth space at next GitHub Universe",
+             "why_or_why_not": "Expensive but good for enterprise relationships",
+             "killer_insight": "Focus on developer-heavy conferences, not general business shows"},
+            {"channel": "Affiliate Marketing", "score": 4, "effort": "medium", "timeline": "months", "budget": "$2K-5K",
+             "specific_ideas": ["Partner with dev consultants", "Productivity review sites"],
+             "first_move": "Pilot affiliate program with 5 development consultants",
+             "why_or_why_not": "Not natural for B2B — most evaluate tools themselves",
+             "killer_insight": "Focus on consultants/agencies, not traditional affiliates"}
+        ],
+        "bullseye_ranking": {
+            "inner_ring": {
+                "channels": ["Developer Communities", "Content Marketing", "Community Building"],
+                "reasoning": "These three channels align perfectly with Linear's strengths. Developer communities provide direct access to their core market. Content marketing lets them own the AI-development narrative. Community building creates long-term retention."
+            },
+            "promising": {
+                "channels": ["Partnerships & Integrations", "Direct Sales", "Sales Prospecting", "Conferences & Events", "Product Hunt & Tech Publications", "Traditional PR"],
+                "reasoning": "Essential for scaling beyond the initial developer audience. Partnerships expand reach, sales channels enable enterprise growth."
+            },
+            "long_shot": {
+                "channels": ["Search Engine Marketing", "Email Marketing", "Webinars & Online Events", "Social Media Marketing", "Business Development", "Influencer Marketing", "Viral Marketing", "Unconventional Marketing", "Trade Shows", "Affiliate Marketing"],
+                "reasoning": "Either too expensive for uncertain returns or better as supporting channels."
+            }
+        },
+        "ninety_day_plan": {
+            "month_1": {
+                "focus": "Developer community dominance and content foundation",
+                "actions": ["Launch Linear API hackathon with AI agent prizes", "Start weekly 'AI Development' newsletter", "Create Linear AI Collective Slack community", "Record 5 customer case study videos", "Build Figma plugin for design-dev handoff"],
+                "target_metric": "1,000 new developer signups from community channels",
+                "budget": "$15K"
+            },
+            "month_2": {
+                "focus": "Content amplification and enterprise preparation",
+                "actions": ["Publish 'State of AI in Product Development' report", "Launch LinkedIn campaign targeting CTOs", "Host first 'AI Development Masterclass' webinar", "Hire enterprise Account Executive", "Build ROI calculator for enterprise prospects"],
+                "target_metric": "500 qualified enterprise leads generated",
+                "budget": "$25K"
+            },
+            "month_3": {
+                "focus": "Enterprise sales activation and scale",
+                "actions": ["Launch enterprise outbound to top 100 targets", "Create AI Development Maturity Assessment tool", "Host virtual Linear user conference", "Implement full PR strategy", "Create Linear certification program"],
+                "target_metric": "$50K in new enterprise ARR closed",
+                "budget": "$35K"
+            }
+        },
+        "budget_allocation": {
+            "total_recommended": "$75K over 90 days",
+            "breakdown": [
+                {"channel": "Developer Communities", "amount": "$15K", "rationale": "Hackathons, conference sponsorships, community building — highest ROI"},
+                {"channel": "Content Marketing", "amount": "$12K", "rationale": "Newsletter, video production, research report — long-term authority"},
+                {"channel": "Community Building", "amount": "$8K", "rationale": "Slack community, events, user-generated content programs"},
+                {"channel": "Direct Sales", "amount": "$25K", "rationale": "Enterprise AE salary/commission, sales tools, marketing materials"},
+                {"channel": "Conferences & Events", "amount": "$10K", "rationale": "Sponsorships and speaking at developer events"},
+                {"channel": "Traditional PR", "amount": "$5K", "rationale": "PR agency retainer for thought leadership and announcements"}
+            ]
+        },
+        "risk_matrix": [
+            {"risk": "AI hype bubble bursts before enterprise foothold", "probability": "medium", "impact": "high", "mitigation": "Focus on concrete productivity metrics, not AI buzzwords"},
+            {"risk": "Microsoft/Atlassian launches competitive AI features", "probability": "high", "impact": "high", "mitigation": "Lock in customers with deep AI workflows; focus on developer experience moat"},
+            {"risk": "Enterprise sales dilutes developer-friendly brand", "probability": "medium", "impact": "medium", "mitigation": "Keep enterprise messaging separate; maintain bottom-up adoption"},
+            {"risk": "AI features remain novelty for most customers", "probability": "medium", "impact": "high", "mitigation": "Invest in onboarding and customer success for AI adoption"}
+        ],
+        "competitive_moat": "Linear's moat isn't just being first to AI — it's building the deepest human-AI collaboration workflows that become impossible to replace. Every AI agent integration creates switching costs. The real defensibility comes from community and ecosystem. The long-term play is owning the interface layer between human product teams and AI agents.",
+        "hot_take": "Linear's biggest risk isn't competition — it's falling in love with their own AI narrative while customers just want better project management. Most teams aren't ready for full AI collaboration yet, but they will pay premium for a tool that makes their current process 30% faster. Lead with speed and developer experience, with AI as the engine, not the headline.",
+        "leads_research": {
+            "personas": [
+                {
+                    "name": "The Engineering Manager",
+                    "description": "Mid-level engineering manager at a Series B+ startup (50-200 engineers). Frustrated with Jira's complexity, looking for a tool that gets out of the way. Makes tool decisions for their team of 8-15 engineers.",
+                    "platforms": ["Twitter", "LinkedIn", "Discord", "GitHub"],
+                    "pain_signals": [
+                        "Jira is killing our velocity",
+                        "We spend more time managing tickets than writing code",
+                        "Looking for a project management tool that developers actually want to use"
+                    ]
+                },
+                {
+                    "name": "The Technical Founder",
+                    "description": "CTO or technical co-founder at an early-stage startup (5-30 people). Wants to set up the right tools from day one. Cares deeply about developer experience and modern tooling.",
+                    "platforms": ["Twitter", "Reddit", "LinkedIn", "Substack"],
+                    "pain_signals": [
+                        "What PM tool should a seed-stage startup use?",
+                        "Setting up our engineering stack from scratch",
+                        "Need something lightweight but powerful for a small team"
+                    ]
+                },
+                {
+                    "name": "The VP of Engineering",
+                    "description": "Senior engineering leader at a growth-stage company (200+ employees). Evaluating AI tools to improve team productivity. Has budget authority and cares about measurable velocity improvements.",
+                    "platforms": ["LinkedIn", "Twitter", "Substack"],
+                    "pain_signals": [
+                        "How are engineering teams actually using AI in their workflow?",
+                        "Looking to modernize our development process",
+                        "Need to show the board measurable productivity gains from AI"
+                    ]
+                }
+            ],
+            "leads": [
+                {"name": "Sarah Chen", "title": "Engineering Manager @ Vercel", "platform": "Twitter", "handle": "@sarahchen_dev", "url": "https://twitter.com/sarahchen_dev", "score": 9, "relevance": "Tweeted about migrating from Jira to a modern tool. Active in developer tooling discussions. Team of 12 engineers."},
+                {"name": "Marcus Johnson", "title": "CTO @ Resend", "platform": "Twitter", "handle": "@marcusjdev", "url": "https://twitter.com/marcusjdev", "score": 9, "relevance": "Building in public, recently asked for PM tool recommendations. 8K followers, highly engaged in dev community."},
+                {"name": "Ana Rodrigues", "title": "VP Engineering @ Lattice", "platform": "LinkedIn", "handle": "ana-rodrigues-eng", "url": "https://linkedin.com/in/ana-rodrigues-eng", "score": 8, "relevance": "Posted about AI adoption in engineering teams. Decision maker for 200+ person eng org."},
+                {"name": "Dev Patel", "title": "Head of Product @ Railway", "platform": "Twitter", "handle": "@devpatel_pm", "url": "https://twitter.com/devpatel_pm", "score": 8, "relevance": "Regularly discusses dev tools and workflows. Influential in the developer platform space."},
+                {"name": "Lisa Park", "title": "Engineering Director @ Stripe", "platform": "LinkedIn", "handle": "lisa-park-stripe", "url": "https://linkedin.com/in/lisa-park-stripe", "score": 8, "relevance": "Speaking at conferences about AI in software development. Enterprise decision maker."},
+                {"name": "James O'Brien", "title": "Founder @ DevOps Weekly", "platform": "Substack", "handle": "devopsweekly", "url": "https://devopsweekly.substack.com", "score": 7, "relevance": "Newsletter reaches 40K+ developers. Has covered project management tools before."},
+                {"name": "Priya Sharma", "title": "Staff Engineer @ Figma", "platform": "Twitter", "handle": "@priyabuilds", "url": "https://twitter.com/priyabuilds", "score": 7, "relevance": "Vocal about developer experience. Potential integration partner advocate."},
+                {"name": "Tom Wilson", "title": "CTO @ Midday", "platform": "GitHub", "handle": "tomwilson", "url": "https://github.com/tomwilson", "score": 7, "relevance": "Building AI-native financial tools. Likely needs AI-compatible PM solution."},
+                {"name": "Sofia Martinez", "title": "EM @ Notion", "platform": "Discord", "handle": "sofia.dev", "url": "#", "score": 6, "relevance": "Active in developer Discord communities discussing workflow optimization."},
+                {"name": "Alex Kim", "title": "Tech Lead @ Supabase", "platform": "Reddit", "handle": "u/alexkim_dev", "url": "https://reddit.com/u/alexkim_dev", "score": 6, "relevance": "Commented on r/ExperiencedDevs about PM tool frustrations. Team lead evaluating options."}
+            ]
+        },
+        "investor_research": {
+            "competitors": [
+                {"name": "Asana", "description": "Work management platform for enterprise teams", "url": "https://asana.com", "funding": "$450M+", "investors": ["Benchmark", "Andreessen Horowitz", "Generation Investment", "Founders Fund"]},
+                {"name": "Monday.com", "description": "Work operating system for teams of all sizes", "url": "https://monday.com", "funding": "$234M", "investors": ["Sapphire Ventures", "Hamilton Lane", "Vintage Investment Partners"]},
+                {"name": "Shortcut (fka Clubhouse)", "description": "Project management for software teams", "url": "https://shortcut.com", "funding": "$66M", "investors": ["Greylock Partners", "Lerer Hippeau", "Battery Ventures"]},
+                {"name": "Height", "description": "AI-first project management tool", "url": "https://height.app", "funding": "$8M", "investors": ["Y Combinator", "Mike Krieger", "Calvin French-Owen"]},
+                {"name": "Plane", "description": "Open-source project management alternative", "url": "https://plane.so", "funding": "$4.5M", "investors": ["OSS Capital", "Akash Bajwa"]}
+            ],
+            "competitor_investors": [
+                {"name": "Benchmark", "type": "VC", "focus": "Enterprise SaaS, developer tools — invested in Asana, Zendesk, New Relic", "url": "https://linkedin.com/company/benchmark"},
+                {"name": "Andreessen Horowitz (a16z)", "type": "VC", "focus": "Software eating the world — massive developer tools portfolio including Asana, GitHub", "url": "https://linkedin.com/company/a16z"},
+                {"name": "Greylock Partners", "type": "VC", "focus": "Enterprise software, developer platforms — invested in Shortcut, Figma, Discord", "url": "https://linkedin.com/company/greylock-partners"},
+                {"name": "Battery Ventures", "type": "VC", "focus": "Application software, infrastructure — invested in Shortcut, Glassdoor", "url": "https://linkedin.com/company/battery-ventures"}
+            ],
+            "market_investors": [
+                {"name": "Accel", "type": "VC", "focus": "Enterprise SaaS at scale — Slack, Atlassian, CrowdStrike portfolio", "url": "https://linkedin.com/company/accel-partners"},
+                {"name": "Sequoia Capital", "type": "VC", "focus": "AI-native companies, developer tools — recent AI fund announcements", "url": "https://linkedin.com/company/sequoia-capital"},
+                {"name": "Index Ventures", "type": "VC", "focus": "Developer tools, SaaS — invested in Figma, Notion, Datadog", "url": "https://linkedin.com/company/index-ventures"},
+                {"name": "Lightspeed Venture Partners", "type": "VC", "focus": "Enterprise AI, developer platforms — recent $7B fund for AI companies", "url": "https://linkedin.com/company/lightspeed-venture-partners"},
+                {"name": "Mike Krieger", "type": "Angel", "focus": "Instagram co-founder — invests in developer tools and design software", "url": "https://linkedin.com/in/mikekrieger"},
+                {"name": "Elad Gil", "type": "Angel", "focus": "Prolific angel investor in infrastructure and developer tools — Color, Instacart, Airbnb", "url": "https://linkedin.com/in/eladgil"}
+            ]
+        }
+    }
+
+
 @app.get("/testreport", response_class=HTMLResponse)
 async def test_report(request: Request, tier: str = "free"):
     """Test report with mock data for iterating on layout. Supports ?tier=free|starter|growth"""
     mock = _mock_analysis()
     html = render_dashboard(
         analysis=mock,
-        startup_name="Cal.com",
+        startup_name="Linear",
         report_id="test-mock-001",
         tier=tier,
         checkout_url="#pricing",
