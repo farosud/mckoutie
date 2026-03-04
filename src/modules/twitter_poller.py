@@ -136,8 +136,10 @@ class TwitterPoller:
                 if not self.last_seen_id or int(tweet.id) > int(self.last_seen_id):
                     self.last_seen_id = str(tweet.id)
 
+                logger.info(f"Mention received [{tweet.id}]: {tweet.text[:200]}")
+
                 if not self._is_trigger(tweet.text):
-                    logger.debug(f"Skipping non-trigger tweet: {tweet.id}")
+                    logger.info(f"Skipping non-trigger tweet: {tweet.id}")
                     continue
 
                 url, handle = self._extract_target(tweet.text)
