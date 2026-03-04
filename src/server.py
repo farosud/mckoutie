@@ -105,6 +105,422 @@ async def landing():
 </html>"""
 
 
+@app.get("/AR", response_class=HTMLResponse)
+async def landing_ar():
+    return """<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mckoutie Argentina — Consultoría de crecimiento para startups argentinas</title>
+    <meta name="description" content="Análisis de tracción con IA para startups argentinas. 19 canales de crecimiento, plan de 90 días, y estrategia real por $39/mes. Sin humo, sin chamuyo.">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+        :root {
+            --bg: #0a0a0a; --bg2: #111; --card: #141414; --border: #222;
+            --text: #e0e0e0; --muted: #666; --accent: #75AADB; --accent2: #F5C518;
+            --green: #00ff88; --orange: #ff6b35;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Space Grotesk', -apple-system, sans-serif;
+            background: var(--bg); color: var(--text);
+            line-height: 1.6; overflow-x: hidden;
+        }
+        .mono { font-family: 'Space Mono', monospace; }
+
+        /* Hero */
+        .hero {
+            min-height: 100vh; display: flex; flex-direction: column;
+            justify-content: center; align-items: center; text-align: center;
+            padding: 2rem; position: relative;
+        }
+        .hero::before {
+            content: ''; position: absolute; inset: 0;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(117,170,219,0.06) 0%, transparent 60%),
+                radial-gradient(ellipse at 80% 50%, rgba(245,197,24,0.04) 0%, transparent 60%);
+            pointer-events: none;
+        }
+        .flag-bar {
+            width: 100%; height: 3px; position: absolute; top: 0;
+            background: linear-gradient(90deg, var(--accent) 33%, #fff 33%, #fff 66%, var(--accent) 66%);
+            opacity: 0.4;
+        }
+        .logo { font-size: 3.5rem; font-weight: 700; letter-spacing: -2px; margin-bottom: 0.3rem; }
+        .logo span { color: var(--accent); }
+        .tagline-main {
+            font-size: 1.6rem; color: var(--accent2); font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        .tagline-sub {
+            font-size: 1.15rem; color: var(--muted); max-width: 550px;
+            margin-bottom: 2.5rem;
+        }
+        .cta-hero {
+            display: inline-block; background: var(--accent2); color: #0a0a0a;
+            padding: 16px 40px; font-size: 1.1rem; font-weight: 700;
+            text-decoration: none; border-radius: 6px; transition: all 0.2s;
+            font-family: 'Space Mono', monospace; letter-spacing: 0.5px;
+        }
+        .cta-hero:hover { background: #e0b200; transform: translateY(-1px); }
+        .scroll-hint {
+            position: absolute; bottom: 2rem; color: var(--muted);
+            font-size: 0.85rem; animation: bounce 2s infinite;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(8px); }
+        }
+
+        /* Sections */
+        section { padding: 5rem 2rem; max-width: 900px; margin: 0 auto; }
+        .section-title {
+            font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem;
+        }
+        .section-title span { color: var(--accent2); }
+        .section-sub { color: var(--muted); margin-bottom: 2.5rem; font-size: 1.05rem; }
+
+        /* Problema */
+        .problema-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;
+        }
+        .problema-card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 8px; padding: 1.5rem;
+        }
+        .problema-card .emoji { font-size: 1.8rem; margin-bottom: 0.5rem; }
+        .problema-card h3 { color: var(--accent2); font-size: 1rem; margin-bottom: 0.5rem; }
+        .problema-card p { color: var(--muted); font-size: 0.9rem; }
+
+        /* How it works */
+        .steps { counter-reset: step; }
+        .step {
+            display: flex; gap: 1.5rem; align-items: flex-start;
+            margin-bottom: 2rem; position: relative;
+        }
+        .step-num {
+            flex-shrink: 0; width: 48px; height: 48px;
+            background: var(--card); border: 2px solid var(--accent);
+            border-radius: 50%; display: flex; align-items: center;
+            justify-content: center; font-weight: 700; color: var(--accent);
+            font-family: 'Space Mono', monospace; font-size: 1.1rem;
+        }
+        .step-content h3 { font-size: 1.1rem; margin-bottom: 0.3rem; }
+        .step-content p { color: var(--muted); font-size: 0.95rem; }
+        .step-content code {
+            background: #1a1a1a; color: var(--accent); padding: 3px 8px;
+            border-radius: 4px; font-family: 'Space Mono', monospace;
+            font-size: 0.85rem;
+        }
+
+        /* What you get */
+        .features {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+        }
+        .feature {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 8px; padding: 1.2rem;
+        }
+        .feature .check { color: var(--green); margin-right: 0.5rem; font-weight: 700; }
+        .feature h3 { font-size: 0.95rem; margin-bottom: 0.3rem; display: flex; align-items: center; }
+        .feature p { color: var(--muted); font-size: 0.85rem; padding-left: 1.5rem; }
+
+        /* Pricing */
+        .pricing-grid {
+            display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.5rem;
+        }
+        .price-card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 10px; padding: 2rem 1.5rem; text-align: center;
+            position: relative;
+        }
+        .price-card.featured {
+            border-color: var(--accent2);
+            box-shadow: 0 0 30px rgba(245,197,24,0.08);
+        }
+        .price-card .badge {
+            position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
+            background: var(--accent2); color: #0a0a0a; padding: 4px 16px;
+            border-radius: 20px; font-size: 0.75rem; font-weight: 700;
+        }
+        .price-card h3 { font-size: 1.2rem; margin-bottom: 0.5rem; }
+        .price-amount { font-size: 2.5rem; font-weight: 700; color: var(--accent2); }
+        .price-amount span { font-size: 1rem; color: var(--muted); }
+        .price-card ul {
+            list-style: none; text-align: left; margin: 1.5rem 0;
+            font-size: 0.85rem; color: var(--muted);
+        }
+        .price-card ul li { padding: 0.4rem 0; border-bottom: 1px solid #1a1a1a; }
+        .price-card ul li::before { content: '→ '; color: var(--accent); }
+
+        /* Argentine context */
+        .context-box {
+            background: var(--card); border-left: 3px solid var(--accent2);
+            padding: 1.5rem 2rem; border-radius: 0 8px 8px 0;
+            margin: 2rem 0;
+        }
+        .context-box p { color: var(--muted); font-size: 0.95rem; margin: 0.3rem 0; }
+        .context-box strong { color: var(--text); }
+
+        /* Testimonial / credibility */
+        .credibility {
+            text-align: center; padding: 3rem 2rem;
+            border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+            margin: 2rem 0;
+        }
+        .credibility p { color: var(--muted); font-size: 1rem; max-width: 600px; margin: 0.5rem auto; }
+        .credibility .highlight { color: var(--accent2); font-weight: 600; }
+
+        /* CTA bottom */
+        .cta-section {
+            text-align: center; padding: 5rem 2rem;
+        }
+        .cta-section h2 { font-size: 2rem; margin-bottom: 1rem; }
+        .cta-section p { color: var(--muted); margin-bottom: 2rem; max-width: 500px; margin-left: auto; margin-right: auto; }
+        .cta-bottom {
+            display: inline-block; background: var(--green); color: #0a0a0a;
+            padding: 16px 48px; font-size: 1.15rem; font-weight: 700;
+            text-decoration: none; border-radius: 6px; transition: all 0.2s;
+            font-family: 'Space Mono', monospace;
+        }
+        .cta-bottom:hover { background: #00cc6a; transform: translateY(-1px); }
+
+        /* Footer */
+        footer {
+            text-align: center; padding: 2rem; color: #333;
+            font-size: 0.8rem; border-top: 1px solid #1a1a1a;
+        }
+        footer a { color: var(--accent); text-decoration: none; }
+
+        /* Responsive */
+        @media (max-width: 700px) {
+            .logo { font-size: 2.5rem; }
+            .tagline-main { font-size: 1.3rem; }
+            .problema-grid, .features, .pricing-grid { grid-template-columns: 1fr; }
+            section { padding: 3rem 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Hero -->
+<div class="hero">
+    <div class="flag-bar"></div>
+    <div class="logo">mck<span>ou</span>tie</div>
+    <p class="tagline-main">Consultoría de crecimiento para startups argentinas</p>
+    <p class="tagline-sub">
+        Análisis de tracción con IA. 19 canales de crecimiento rankeados para TU startup.
+        Plan de 90 días. Sin chamuyo, sin PowerPoints de 200 slides. $39/mes.
+    </p>
+    <a class="cta-hero" href="https://x.com/intent/tweet?text=@mckoutie%20analyse%20my%20startup%20" target="_blank">
+        Analizá tu startup ahora
+    </a>
+    <div class="scroll-hint">↓ scrolleá para más</div>
+</div>
+
+<!-- El problema -->
+<section>
+    <h2 class="section-title">El <span>problema</span> que todos conocemos</h2>
+    <p class="section-sub">Emprender en Argentina es un deporte extremo. Y la consultoría tradicional no está diseñada para vos.</p>
+
+    <div class="problema-grid">
+        <div class="problema-card">
+            <div class="emoji">💸</div>
+            <h3>McKinsey cobra USD 100K+</h3>
+            <p>Y ni siquiera entienden tu mercado. ¿Vas a pagar eso con pesos? Dale.</p>
+        </div>
+        <div class="problema-card">
+            <div class="emoji">🤷</div>
+            <h3>"Hacé content marketing"</h3>
+            <p>El consejo genérico que te dan todos. Pero ¿qué canal específico mueve la aguja para TU startup?</p>
+        </div>
+        <div class="problema-card">
+            <div class="emoji">⏰</div>
+            <h3>Tiempo = tu recurso más escaso</h3>
+            <p>Estás haciendo de CEO, CTO, y community manager. No tenés 3 meses para un "estudio de mercado".</p>
+        </div>
+        <div class="problema-card">
+            <div class="emoji">🌎</div>
+            <h3>Pensás en global desde el día 1</h3>
+            <p>Tu startup no es solo para Argentina. Necesitás una estrategia que escale a LATAM y más allá.</p>
+        </div>
+    </div>
+</section>
+
+<!-- Contexto argentino -->
+<section>
+    <h2 class="section-title">Hecho para el <span>ecosistema argentino</span></h2>
+    <p class="section-sub">No es un tool gringo traducido. Entiende el contexto real.</p>
+
+    <div class="context-box">
+        <p><strong>El talento argentino es de primer nivel mundial</strong> — lo que falta no es capacidad, es estrategia de distribución.</p>
+        <p>Mercado Libre, Auth0, Ualá, Mural, Pomelo — todas nacieron acá. La diferencia entre las que escalan y las que mueren no es el producto. Es la tracción.</p>
+    </div>
+
+    <div class="context-box">
+        <p><strong>Mckoutie analiza tu startup con el framework Bullseye</strong> — el mismo que usaron las startups más exitosas del mundo para encontrar su canal de crecimiento principal.</p>
+        <p>19 canales. Cada uno evaluado del 1 al 10 para tu caso específico. No genérico — para VOS.</p>
+    </div>
+
+    <div class="context-box">
+        <p><strong>¿Tu mercado es Argentina? ¿LATAM? ¿Global?</strong> — El análisis se adapta. Si tu play es WhatsApp commerce en LATAM, te lo dice. Si es Product Hunt + SEO para el mercado US, también.</p>
+    </div>
+</section>
+
+<!-- Cómo funciona -->
+<section>
+    <h2 class="section-title">Cómo <span>funciona</span></h2>
+    <p class="section-sub">Tres pasos. Dos minutos. Cero burocracia.</p>
+
+    <div class="steps">
+        <div class="step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+                <h3>Twitteá a @mckoutie</h3>
+                <p>Mandá un tweet: <code>@mckoutie analyse my startup https://tustartup.com</code></p>
+                <p>También podés tagear una empresa: <code>@mckoutie analyse my startup @tuhandle</code></p>
+            </div>
+        </div>
+        <div class="step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+                <h3>Recibí un teaser gratis</h3>
+                <p>En minutos, mckoutie responde con un hilo con tus 3 canales top y un hot take. Gratis. Sin tarjeta.</p>
+            </div>
+        </div>
+        <div class="step">
+            <div class="step-num">3</div>
+            <div class="step-content">
+                <h3>Desbloqueá el análisis completo</h3>
+                <p>Suscribite por $39/mes y accedé al dashboard interactivo con los 19 canales, plan de 90 días, leads, inversores, y actualizaciones mensuales.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Qué incluye -->
+<section>
+    <h2 class="section-title">Qué <span>incluye</span></h2>
+    <p class="section-sub">Todo lo que necesitás para dejar de adivinar y empezar a crecer.</p>
+
+    <div class="features">
+        <div class="feature">
+            <h3><span class="check">✓</span> 19 canales analizados</h3>
+            <p>Desde SEO y content hasta partnerships y engineering as marketing. Cada uno con score y tácticas específicas.</p>
+        </div>
+        <div class="feature">
+            <h3><span class="check">✓</span> Framework Bullseye</h3>
+            <p>Tus canales rankeados en inner ring, middle ring, y outer ring. Sabé exactamente dónde apostar.</p>
+        </div>
+        <div class="feature">
+            <h3><span class="check">✓</span> Plan de 90 días</h3>
+            <p>Semana por semana. Qué hacer, cómo medirlo, y qué esperar. Nada de "defina su estrategia".</p>
+        </div>
+        <div class="feature">
+            <h3><span class="check">✓</span> Budget allocation</h3>
+            <p>Cuánto poner en cada canal con el presupuesto que tengas, ya sean $500 o $50,000.</p>
+        </div>
+        <div class="feature">
+            <h3><span class="check">✓</span> Risk matrix</h3>
+            <p>Los riesgos reales de tu modelo y cómo mitigarlos. Sin endulzar nada.</p>
+        </div>
+        <div class="feature">
+            <h3><span class="check">✓</span> Hot take</h3>
+            <p>Lo que nadie te va a decir. La verdad incómoda sobre tu startup. A veces duele, siempre sirve.</p>
+        </div>
+        <div class="feature">
+            <h3><span class="check">✓</span> Leads + personas</h3>
+            <p>3 personas de tu cliente ideal + 10 leads reales para empezar a vender hoy. (Plan Growth)</p>
+        </div>
+        <div class="feature">
+            <h3><span class="check">✓</span> Investor intel</h3>
+            <p>Quién invirtió en tu competencia, qué fondos miran tu vertical, y cómo acercarte. (Plan Growth)</p>
+        </div>
+    </div>
+</section>
+
+<!-- Precios -->
+<section>
+    <h2 class="section-title">Precios <span>reales</span></h2>
+    <p class="section-sub">Sin letra chica. Sin contratos. Cancelá cuando quieras.</p>
+
+    <div class="pricing-grid">
+        <div class="price-card">
+            <h3>Teaser</h3>
+            <div class="price-amount">Gratis</div>
+            <ul>
+                <li>Top 3 canales de crecimiento</li>
+                <li>Hot take sobre tu startup</li>
+                <li>Hilo público en Twitter</li>
+                <li>Sin tarjeta, sin registro</li>
+            </ul>
+        </div>
+        <div class="price-card featured">
+            <div class="badge">MÁS POPULAR</div>
+            <h3>Starter</h3>
+            <div class="price-amount">$39<span>/mes</span></div>
+            <ul>
+                <li>19 canales con score y tácticas</li>
+                <li>Bullseye framework completo</li>
+                <li>Plan de 90 días semanal</li>
+                <li>Budget allocation</li>
+                <li>Risk matrix + moat analysis</li>
+                <li>Hot take sin filtro</li>
+                <li>Updates mensuales del mercado</li>
+            </ul>
+        </div>
+        <div class="price-card">
+            <h3>Growth</h3>
+            <div class="price-amount">$200<span>/mes</span></div>
+            <ul>
+                <li>Todo lo de Starter</li>
+                <li>3 customer personas detalladas</li>
+                <li>10 leads reales con contacto</li>
+                <li>Investor intelligence</li>
+                <li>Competitor funding data</li>
+                <li>Monthly market deep dives</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="context-box" style="margin-top: 2rem;">
+        <p><strong>¿$39 USD en Argentina?</strong> — Sí, es plata. Pero un consultor decente cobra eso por hora. Acá tenés un análisis completo que se actualiza solo, todos los meses. Un McKinsey trucho cobra $100K+ por algo peor.</p>
+    </div>
+</section>
+
+<!-- Credibility -->
+<div class="credibility">
+    <p class="highlight">Construido por un argentino, para argentinos que piensan en grande.</p>
+    <p>Basado en el framework "Traction" de Gabriel Weinberg (fundador de DuckDuckGo). Potenciado por IA. Diseñado para startups que no tienen tiempo ni presupuesto para chamuyos corporativos.</p>
+    <p style="margin-top: 1rem; font-size: 0.85rem;">El mismo framework que usaron Dropbox, Hubspot, y cientos de startups YC para encontrar su canal de crecimiento.</p>
+</div>
+
+<!-- CTA final -->
+<div class="cta-section">
+    <h2>¿Listo para dejar de improvisar?</h2>
+    <p>En 2 minutos tenés un análisis de tracción profesional. El teaser es gratis. Si no te sirve, no pagás nada.</p>
+    <a class="cta-bottom" href="https://x.com/intent/tweet?text=@mckoutie%20analyse%20my%20startup%20" target="_blank">
+        Analizá tu startup →
+    </a>
+    <p style="color: var(--muted); font-size: 0.85rem; margin-top: 1rem;">
+        Twitteá a <a href="https://x.com/mckoutie" target="_blank" style="color: var(--accent); text-decoration: none;">@mckoutie</a> y arrancá.
+    </p>
+</div>
+
+<!-- Footer -->
+<footer>
+    <p>mckoutie — McKinsey at home</p>
+    <p style="margin-top: 0.5rem;">
+        <a href="/">English</a> · <a href="/AR">Argentina</a> · <a href="https://x.com/mckoutie" target="_blank">Twitter</a>
+    </p>
+    <p style="margin-top: 1rem;">No afiliado con McKinsey (obviamente). Hecho con asado y mate.</p>
+</footer>
+
+</body>
+</html>"""
+
+
 @app.get("/auth/twitter")
 async def auth_twitter(request: Request, redirect: str = "/"):
     """Initiate Twitter OAuth 2.0 login."""

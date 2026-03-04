@@ -14,6 +14,7 @@ Flow:
 
 import asyncio
 import logging
+import random
 import time
 
 from src.config import settings
@@ -74,14 +75,11 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
     )
     save_record(record)
 
-    # 2. Acknowledge the request on Twitter (if we can write)
+    # 2. Immediate acknowledgment on Twitter (BEFORE any analysis starts)
     if settings.has_twitter_write:
-        ack_text = (
-            f"On it, @{request.author_username}. "
-            f"Running full 19-channel traction analysis on {request.target_display}.\n\n"
-            f"This takes 2-5 minutes (we use the big brain model). Thread incoming."
-        )
+        ack_text = _generate_ack_message(request.author_username, request.target_display)
         poller.reply_to_tweet(request.tweet_id, ack_text)
+        logger.info(f"Sent immediate ack reply to @{request.author_username}")
     else:
         logger.info("Twitter write disabled — skipping acknowledgment tweet")
 
@@ -336,3 +334,40 @@ def _post_teaser_thread(
             time.sleep(1.5)
 
     return reply_ids
+
+
+# --- Acknowledgment message templates ---
+
+_ACK_TEMPLATES = [
+    (
+        "\U0001f50d mckoutie's analysts are suiting up... "
+        "give us a minute while we research {target}\n\n"
+        "Full 19-channel traction breakdown incoming. Thread soon."
+    ),
+    (
+        "\U0001f453 *adjusts tiny capybara glasses*\n\n"
+        "Researching {target} right now, @{author}. "
+        "This takes 2-3 min (we use the big brain model). Stand by."
+    ),
+    (
+        "\U0001f4cb Copy that, @{author}.\n\n"
+        "Our capybara analysts are pulling up everything on {target}. "
+        "Thread dropping in a few minutes."
+    ),
+    (
+        "\U0001f680 On it! Firing up the traction engine for {target}.\n\n"
+        "@{author} sit tight — 19-channel analysis loading. "
+        "This is the part where we pretend to be McKinsey."
+    ),
+    (
+        "\U0001f9e0 Engaging big brain mode for {target}...\n\n"
+        "@{author} we're scraping, analyzing, and judging. "
+        "Thread incoming in 2-3 min. No billable hours, promise."
+    ),
+]
+
+
+def _generate_ack_message(author_username: str, target_display: str) -> str:
+    """Pick a random fun acknowledgment message for the immediate reply."""
+    template = random.choice(_ACK_TEMPLATES)
+    return template.format(author=author_username, target=target_display)
