@@ -24,14 +24,15 @@ logger = logging.getLogger(__name__)
 # Persistent state file for surviving restarts/deploys
 STATE_FILE = Path(os.getenv("STATE_DIR", "/tmp")) / "mckoutie_poller_state.json"
 
-# Patterns to detect the request
+# Patterns to detect the request — intentionally permissive.
+# If someone tags @mckoutie with anything resembling a request, process it.
 TRIGGER_PATTERNS = [
-    r"analy[sz]e\s+my\s+(startup|project|company|business|site|product|app|idea)",
-    r"roast\s+my\s+(startup|project|company|business|site|product|app|idea)",
-    r"review\s+my\s+(startup|project|company|business|site|product|app|idea)",
-    r"check\s+my\s+(startup|project|company|business|site|product|app|idea)",
-    r"consult\s+on",
-    r"@mckoutie\s+https?://",  # just tagging with a URL is enough intent
+    r"analy[sz]e\b",          # "analyze", "analyse" anywhere in the tweet
+    r"roast\b",               # "roast" anywhere
+    r"review\b",              # "review" anywhere
+    r"check\s+(my|this|it|out)",  # "check my/this/it out"
+    r"consult\b",             # "consult" anywhere
+    r"https?://",             # any mention containing a non-twitter URL (checked in _is_trigger)
 ]
 
 # Extract URL or @username from tweet text
@@ -95,9 +96,22 @@ class TwitterPoller:
             logger.warning(f"Failed to save poller state: {e}")
 
     def _is_trigger(self, text: str) -> bool:
-        """Check if tweet text contains a trigger phrase."""
+        """Check if tweet text contains a trigger phrase.
+
+        Very permissive — if someone mentions @mckoutie with any action word
+        or a URL, we treat it as a request. Better to process a false positive
+        than miss a real request.
+        """
         text_lower = text.lower()
-        return any(re.search(p, text_lower) for p in TRIGGER_PATTERNS)
+        for pattern in TRIGGER_PATTERNS:
+            if pattern == r"https?://":
+                # For bare URL pattern, only trigger if there's a non-Twitter URL
+                urls = re.findall(r"https?://[^\s]+", text_lower)
+                if any(u for u in urls if "twitter.com" not in u and "x.com" not in u and "t.co" not in u):
+                    return True
+            elif re.search(pattern, text_lower):
+                return True
+        return False
 
     def _extract_target(self, text: str) -> tuple[str | None, str | None]:
         """
