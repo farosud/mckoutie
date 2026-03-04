@@ -565,6 +565,21 @@ async def auth_logout(request: Request, redirect: str = "/"):
     return response
 
 
+@app.get("/testreport", response_class=HTMLResponse)
+async def test_report(request: Request, tier: str = "free"):
+    """Test report with mock data for iterating on layout. Supports ?tier=free|starter|growth"""
+    mock = _mock_analysis()
+    html = render_dashboard(
+        analysis=mock,
+        startup_name="Cal.com",
+        report_id="test-mock-001",
+        tier=tier,
+        checkout_url="#pricing",
+        upgrade_url="#pricing",
+    )
+    return HTMLResponse(content=html)
+
+
 @app.get("/report/{report_id}", response_class=HTMLResponse)
 async def view_report(request: Request, report_id: str, paid: str | None = None):
     """View a report — dashboard with tier-based content gating."""
