@@ -26,13 +26,16 @@ _EXA_SEMAPHORE = asyncio.Semaphore(3)
 # Exa typically responds in <2s; anything over 15s is hung
 _EXA_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
-# LLM timeout — 45s per attempt (keeps total within orchestrator budget)
-_LLM_TIMEOUT = httpx.Timeout(45.0, connect=10.0)
+# LLM timeout — 90s per attempt (Opus on VPS can be slow for structured output)
+_LLM_TIMEOUT = httpx.Timeout(90.0, connect=15.0)
 
 # Use a fast model for persona generation (structured JSON, doesn't need Opus)
 _PERSONA_MODEL = "google/gemini-2.5-flash"
 # Fallback to Claude if Gemini fails
 _PERSONA_MODEL_FALLBACK = "anthropic/claude-sonnet-4"
+
+# Use Sonnet (not Opus) on VPS for persona gen — much faster, good enough for JSON
+_VPS_PERSONA_MODEL = "claude-sonnet-4-20250514"
 
 
 async def find_leads(startup_data: str, analysis: dict) -> dict:
@@ -47,7 +50,11 @@ async def find_leads(startup_data: str, analysis: dict) -> dict:
     one_liner = profile.get("one_liner", "")
     name = profile.get("name", "")
 
-    logger.info(f"[LEADS] Starting lead finder for '{name or 'unknown startup'}'")
+    logger.info(
+        f"[LEADS] Starting lead finder for '{name or 'unknown startup'}' "
+        f"| market='{market[:60]}' | one_liner='{one_liner[:60]}' "
+        f"| exa_key_starts={settings.exa_api_key[:8] if settings.exa_api_key else 'MISSING'}..."
+    )
 
     # Phase 1: Generate personas via LLM
     personas = []
@@ -142,19 +149,23 @@ async def _find_leads_via_exa(
     for persona in personas[:3]:
         queries = persona.get("search_queries", [])
         # Use top 2 search queries per persona = max 6 total (down from 9)
-        # Pain signals are too literal for semantic search — queries work better
         search_terms = queries[:2]
 
-        # Fallback: if no search queries, use persona name + defining trait
+        # Fallback: if no search queries, build from pain signals
         if not search_terms:
-            fallback = f"{persona.get('name', '')} {persona.get('who', '')}"
-            search_terms = [fallback.strip()[:120]]
+            pain = persona.get("pain_signals", [])
+            if pain:
+                # Use first 2 pain signals as search queries — these are real phrases
+                search_terms = [p.strip()[:120] for p in pain[:2] if p.strip()]
+            if not search_terms:
+                fallback = f"{persona.get('name', '')} {persona.get('who', '')}"
+                search_terms = [fallback.strip()[:120]]
 
         for query in search_terms[:2]:
-            # Truncate overly long LLM-generated queries (Exa works best with <100 chars)
             clean_query = query.strip()[:120]
             if not clean_query:
                 continue
+            logger.info(f"[LEADS] Queuing Exa search for persona '{persona.get('name', '?')}': {clean_query[:80]}")
             tasks.append(_exa_search_throttled(query=clean_query, num_results=5))
             task_meta.append(persona)
 
@@ -223,7 +234,7 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
                         "numResults": num_results,
                         "type": "auto",
                         "contents": {
-                            "text": {"maxCharacters": 500},
+                            "text": {"maxCharacters": 1500},
                         },
                     },
                 )
@@ -308,8 +319,10 @@ def _extract_lead_info(result: dict, persona: dict) -> dict | None:
     title = result.get("title", "")
     text = result.get("text", "")[:500]
 
-    if not url or not title:
+    if not url:
         return None
+    if not title:
+        title = url.split("/")[-1][:60] or "Unknown"
 
     # Determine source type
     source = "web"
@@ -350,12 +363,12 @@ def _extract_lead_info(result: dict, persona: dict) -> dict | None:
 
 
 async def _call_vps_proxy(prompt: str) -> str:
-    """Call VPS Claude proxy for lead generation. Single attempt, fail fast."""
+    """Call VPS Claude proxy for lead generation. Uses Sonnet (fast) not Opus."""
     url = f"{settings.vps_proxy_url.rstrip('/')}/chat/completions"
     async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
         t0 = _time.monotonic()
         try:
-            logger.info("[LEADS] VPS proxy attempt (single shot)")
+            logger.info(f"[LEADS] VPS proxy attempt with {_VPS_PERSONA_MODEL}")
             resp = await client.post(
                 url,
                 headers={
@@ -363,7 +376,7 @@ async def _call_vps_proxy(prompt: str) -> str:
                     "X-Proxy-Key": settings.vps_proxy_key,
                 },
                 json={
-                    "model": settings.analysis_model,
+                    "model": _VPS_PERSONA_MODEL,  # Sonnet, not Opus — much faster for JSON
                     "max_tokens": 4000,
                     "messages": [
                         {
@@ -381,7 +394,13 @@ async def _call_vps_proxy(prompt: str) -> str:
                 if content:
                     logger.info(f"[LEADS] VPS proxy responded in {elapsed:.1f}s ({len(content)} chars)")
                     return content
-            logger.warning(f"[LEADS] VPS proxy {resp.status_code} after {elapsed:.1f}s — falling back")
+                logger.warning(f"[LEADS] VPS proxy returned empty content after {elapsed:.1f}s")
+            else:
+                body = resp.text[:500]
+                logger.warning(f"[LEADS] VPS proxy {resp.status_code} after {elapsed:.1f}s: {body}")
+        except httpx.TimeoutException:
+            elapsed = _time.monotonic() - t0
+            logger.warning(f"[LEADS] VPS proxy timeout after {elapsed:.1f}s — falling back")
         except Exception as e:
             elapsed = _time.monotonic() - t0
             logger.warning(f"[LEADS] VPS proxy error after {elapsed:.1f}s: {e} — falling back")
@@ -389,15 +408,22 @@ async def _call_vps_proxy(prompt: str) -> str:
 
 
 async def _call_llm(prompt: str) -> str:
-    """Call LLM — tries OpenRouter Gemini (fast) first, then VPS proxy, then OpenRouter Claude.
+    """Call LLM — tries VPS proxy (free Opus) first, then OpenRouter Gemini, then Claude.
 
-    Persona generation is structured JSON — speed matters more than depth.
-    Client is reused across retries to avoid connection overhead.
+    VPS proxy is free and uses Opus — best quality for persona generation.
+    OpenRouter is the fallback chain.
     """
     last_error = None
 
-    # Try OpenRouter FIRST — fast model (Gemini) for persona gen
-    # Speed > depth for structured JSON output
+    # Try VPS proxy FIRST (Claude Max — free, Opus quality)
+    if settings.has_vps_proxy:
+        try:
+            return await _call_vps_proxy(prompt)
+        except RuntimeError as e:
+            last_error = str(e)
+            logger.warning(f"[LEADS] VPS proxy failed: {e} — trying OpenRouter")
+
+    # Fallback to OpenRouter
     if settings.openrouter_api_key:
         models_to_try = [_PERSONA_MODEL, _PERSONA_MODEL_FALLBACK]
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
@@ -463,15 +489,7 @@ async def _call_llm(prompt: str) -> str:
                 if model == _PERSONA_MODEL:
                     logger.info(f"[LEADS] Fast model failed, trying fallback ({_PERSONA_MODEL_FALLBACK})")
 
-    # Try VPS proxy (Claude Max — free but slower)
-    if settings.has_vps_proxy:
-        try:
-            return await _call_vps_proxy(prompt)
-        except RuntimeError as e:
-            last_error = str(e)
-            logger.warning(f"[LEADS] VPS proxy failed: {e}")
-
-    # Fallback to Anthropic direct
+    # Last resort: Anthropic direct
     if settings.anthropic_api_key:
         try:
             logger.info("[LEADS] Falling back to Anthropic direct API")

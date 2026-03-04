@@ -51,7 +51,11 @@ async def find_investors(startup_data: str, analysis: dict) -> dict:
         logger.warning("[INVESTORS] No EXA_API_KEY set — skipping investor search")
         return result
 
-    logger.info(f"[INVESTORS] Starting investor finder for '{name or 'unknown startup'}'")
+    logger.info(
+        f"[INVESTORS] Starting investor finder for '{name or 'unknown startup'}' "
+        f"| market='{market[:60]}' | one_liner='{one_liner[:60]}' "
+        f"| exa_key_starts={settings.exa_api_key[:8]}..."
+    )
 
     # Run both phases in parallel with independent error handling
     comp_task = _find_competitors(name, one_liner, market)
@@ -99,13 +103,31 @@ async def _find_competitors(name: str, one_liner: str, market: str) -> list[dict
     competitors = []
     seen = set()
 
-    # Keep queries short and focused — Exa works best with concise semantic queries
-    queries = [
-        f"{market} startup funding raised"[:100],
-        f"{name} competitors raised seed series"[:100],
-    ]
+    # Build targeted queries using one_liner for context when market is vague
+    context = one_liner if one_liner else market
+    if not context:
+        context = name
 
-    # Run competitor queries in parallel (reduced from 3 to 2)
+    queries = []
+    # Query 1: competitors with funding (use one_liner for specificity)
+    if market and len(market.split()) > 2:
+        queries.append(f"{market} startup raised funding round"[:100])
+    else:
+        queries.append(f"{context} competitors startup funding"[:100])
+
+    # Query 2: direct competitor search
+    if name and name.lower() not in ("unknown", ""):
+        queries.append(f"{name} alternatives competitors {market}"[:100])
+    else:
+        queries.append(f"startups like {context} raised seed series A"[:100])
+
+    # Query 3: add a crunchbase/techcrunch style query for better funding data
+    queries.append(f"{market} startup funding announcement 2024 2025"[:100])
+
+    for q in queries:
+        logger.info(f"[INVESTORS] Competitor query: {q}")
+
+    # Run competitor queries in parallel
     tasks = [_exa_search_throttled(q, num_results=5) for q in queries]
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -151,13 +173,21 @@ async def _find_market_investors(name: str, market: str, one_liner: str) -> list
     investors = []
     seen_urls = set()
 
-    # Keep queries short and focused for reliable Exa results
+    # Build specific investor queries
+    context = one_liner if one_liner else market
+    if not context:
+        context = name
+
     queries = [
-        f"investors funding {market} startups"[:100],
-        f"VC angel investor {market} portfolio"[:100],
+        f"venture capital investing in {context}"[:100],
+        f"VC fund {market} portfolio companies startups"[:100],
+        f"angel investor {market} seed round investment"[:100],
     ]
 
-    # Run investor queries in parallel (reduced from 3 to 2)
+    for q in queries:
+        logger.info(f"[INVESTORS] Market investor query: {q}")
+
+    # Run investor queries in parallel
     tasks = [_exa_search_throttled(q, num_results=5) for q in queries]
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -236,9 +266,12 @@ def _extract_competitor_investors(competitors: list[dict]) -> list[dict]:
 def _extract_funding(text: str) -> str:
     """Try to find funding amounts in text."""
     patterns = [
-        r"\$[\d,.]+[MBK]\s*(?:series\s*[A-Z]|seed|round|funding|raised)",
+        r"\$[\d,.]+\s*[MBK]\b",                                    # $10M, $2.5B, $500K
+        r"\$[\d,.]+\s*(?:million|billion)",                         # $10 million
+        r"(?:raised|secured|closed)\s+\$[\d,.]+\s*[MBK]?",         # raised $10M
+        r"\$[\d,.]+[MBK]?\s*(?:series\s*[A-Z]|seed|round|funding|raised)",
         r"(?:raised|funding|series\s*[A-Z]|seed)\s*(?:of\s*)?\$[\d,.]+[MBK]?",
-        r"\$[\d,.]+\s*(?:million|billion)",
+        r"(?:USD|US\$)\s*[\d,.]+\s*(?:million|billion|[MBK])",     # USD 10 million
     ]
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -294,7 +327,7 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
                         "numResults": num_results,
                         "type": "auto",
                         "contents": {
-                            "text": {"maxCharacters": 500},
+                            "text": {"maxCharacters": 1200},  # more text = better funding/investor extraction
                         },
                     },
                 )
