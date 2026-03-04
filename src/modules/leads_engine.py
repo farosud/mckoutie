@@ -93,8 +93,8 @@ async def find_leads_for_persona(persona: dict, startup_context: str) -> list[di
     all_leads = []
     seen_urls = set()
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        for query in queries[:5]:  # Limit API calls
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+        for query in queries[:4]:  # Limit API calls
             try:
                 resp = await client.post(
                     "https://api.exa.ai/search",
@@ -103,11 +103,12 @@ async def find_leads_for_persona(persona: dict, startup_context: str) -> list[di
                         "Content-Type": "application/json",
                     },
                     json={
-                        "query": query,
+                        "query": query[:120],  # Truncate long queries
                         "numResults": 5,
-                        "text": True,
                         "type": "auto",
-                        "useAutoprompt": True,
+                        "contents": {
+                            "text": {"maxCharacters": 500},
+                        },
                     },
                 )
                 resp.raise_for_status()

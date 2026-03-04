@@ -125,48 +125,44 @@ async def _find_competitor_investors(competitors: list[dict]) -> list[dict]:
     """Search Exa for investors who funded specific competitors."""
     investors = []
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        for comp in competitors[:7]:  # Limit API calls
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+        for comp in competitors[:5]:  # Limit API calls
             name = comp.get("name", "")
             if not name:
                 continue
 
-            queries = [
-                f"{name} funding round investors",
-                f"{name} raised series seed investment",
-            ]
+            query = f"{name} funding round investors"[:100]
 
-            for query in queries[:1]:  # One query per competitor
-                try:
-                    resp = await client.post(
-                        "https://api.exa.ai/search",
-                        headers={
-                            "x-api-key": settings.exa_api_key,
-                            "Content-Type": "application/json",
+            try:
+                resp = await client.post(
+                    "https://api.exa.ai/search",
+                    headers={
+                        "x-api-key": settings.exa_api_key,
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "query": query,
+                        "numResults": 3,
+                        "type": "auto",
+                        "contents": {
+                            "text": {"maxCharacters": 500},
                         },
-                        json={
-                            "query": query,
-                            "numResults": 3,
-                            "text": True,
-                            "type": "auto",
-                            "useAutoprompt": True,
-                        },
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                for result in data.get("results", []):
+                    investor_info = _extract_investor_from_result(
+                        result, comp_name=name
                     )
-                    resp.raise_for_status()
-                    data = resp.json()
+                    if investor_info:
+                        investors.extend(investor_info)
 
-                    for result in data.get("results", []):
-                        # Extract investor info from search results
-                        investor_info = _extract_investor_from_result(
-                            result, comp_name=name
-                        )
-                        if investor_info:
-                            investors.extend(investor_info)
+            except Exception as e:
+                logger.warning(f"Exa investor search failed for {name}: {e}")
 
-                except Exception as e:
-                    logger.warning(f"Exa investor search failed for {name}: {e}")
-
-                await asyncio.sleep(0.3)
+            await asyncio.sleep(0.3)
 
     return investors
 
@@ -181,8 +177,8 @@ async def _find_space_investors(queries: list[str], market_category: str) -> lis
         all_queries.append(f"VC fund investing in {market_category} startups 2025 2026")
         all_queries.append(f"angel investor {market_category} portfolio")
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        for query in all_queries[:5]:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+        for query in all_queries[:4]:
             try:
                 resp = await client.post(
                     "https://api.exa.ai/search",
@@ -191,11 +187,12 @@ async def _find_space_investors(queries: list[str], market_category: str) -> lis
                         "Content-Type": "application/json",
                     },
                     json={
-                        "query": query,
+                        "query": query[:120],
                         "numResults": 5,
-                        "text": True,
                         "type": "auto",
-                        "useAutoprompt": True,
+                        "contents": {
+                            "text": {"maxCharacters": 500},
+                        },
                     },
                 )
                 resp.raise_for_status()

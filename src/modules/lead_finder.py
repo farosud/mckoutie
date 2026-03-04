@@ -22,16 +22,17 @@ logger = logging.getLogger(__name__)
 # Semaphore to avoid blasting Exa with too many concurrent requests
 _EXA_SEMAPHORE = asyncio.Semaphore(3)
 
-# Shared Exa timeout config — 60s per request, 10s connect
-_EXA_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+# Shared Exa timeout config — 15s per request, 5s connect
+# Exa typically responds in <2s; anything over 15s is hung
+_EXA_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
-# LLM timeout — 90s per attempt (2 attempts max = 180s worst case)
-_LLM_TIMEOUT = httpx.Timeout(90.0, connect=15.0)
+# LLM timeout — 45s per attempt (keeps total within orchestrator budget)
+_LLM_TIMEOUT = httpx.Timeout(45.0, connect=10.0)
 
-# Use a fast model for persona generation (structured JSON, doesn't need Sonnet)
-_PERSONA_MODEL = "google/gemini-2.5-flash-preview"
-# Fallback to Sonnet if needed
-_PERSONA_MODEL_FALLBACK = "anthropic/claude-opus-4"
+# Use a fast model for persona generation (structured JSON, doesn't need Opus)
+_PERSONA_MODEL = "google/gemini-2.5-flash"
+# Fallback to Claude if Gemini fails
+_PERSONA_MODEL_FALLBACK = "anthropic/claude-sonnet-4"
 
 
 async def find_leads(startup_data: str, analysis: dict) -> dict:
@@ -140,12 +141,21 @@ async def _find_leads_via_exa(
 
     for persona in personas[:3]:
         queries = persona.get("search_queries", [])
-        pain_signals = persona.get("pain_signals", [])
-        # Use top 2 search queries + top 1 pain signal per persona = max 9 total
-        search_terms = queries[:2] + pain_signals[:1]
+        # Use top 2 search queries per persona = max 6 total (down from 9)
+        # Pain signals are too literal for semantic search — queries work better
+        search_terms = queries[:2]
 
-        for query in search_terms[:3]:
-            tasks.append(_exa_search_throttled(query=query, num_results=5))
+        # Fallback: if no search queries, use persona name + defining trait
+        if not search_terms:
+            fallback = f"{persona.get('name', '')} {persona.get('who', '')}"
+            search_terms = [fallback.strip()[:120]]
+
+        for query in search_terms[:2]:
+            # Truncate overly long LLM-generated queries (Exa works best with <100 chars)
+            clean_query = query.strip()[:120]
+            if not clean_query:
+                continue
+            tasks.append(_exa_search_throttled(query=clean_query, num_results=5))
             task_meta.append(persona)
 
     logger.info(f"[LEADS] Launching {len(tasks)} Exa searches (max 3 concurrent)")
@@ -189,7 +199,7 @@ async def _exa_search_throttled(query: str, num_results: int = 5) -> list[dict]:
 
 
 async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
-    """Run an Exa semantic search with text content. Retries on 429/5xx."""
+    """Run an Exa semantic search with text content. Retries once on 429/5xx."""
     if not settings.exa_api_key:
         logger.warning("[LEADS] Exa search skipped — no API key")
         return []
@@ -197,10 +207,10 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
     last_error = None
     # Create client ONCE outside the retry loop to reuse connections
     async with httpx.AsyncClient(timeout=_EXA_TIMEOUT) as client:
-        for attempt in range(3):
+        for attempt in range(2):  # 2 attempts max (down from 3)
             try:
                 logger.info(
-                    f"[LEADS] Exa search attempt {attempt+1}/3: {query[:80]}"
+                    f"[LEADS] Exa search attempt {attempt+1}/2: {query[:80]}"
                 )
                 resp = await client.post(
                     "https://api.exa.ai/search",
@@ -213,16 +223,16 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
                         "numResults": num_results,
                         "type": "auto",
                         "contents": {
-                            "text": {"maxCharacters": 1000},
+                            "text": {"maxCharacters": 500},
                         },
                     },
                 )
 
                 if resp.status_code == 429:
-                    wait = 2 ** (attempt + 1) + random.uniform(0, 2)
+                    wait = 2 ** (attempt + 1) + random.uniform(0, 1)
                     logger.warning(
                         f"[LEADS] Exa rate limited (429), backing off {wait:.1f}s "
-                        f"(attempt {attempt+1}/3) — query: {query[:60]}"
+                        f"(attempt {attempt+1}/2) — query: {query[:60]}"
                     )
                     await asyncio.sleep(wait)
                     last_error = "rate limited (429)"
@@ -239,11 +249,11 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
                     body = resp.text[:300]
                     logger.warning(
                         f"[LEADS] Exa server error {resp.status_code} "
-                        f"(attempt {attempt+1}/3): {body}"
+                        f"(attempt {attempt+1}/2): {body}"
                     )
                     last_error = f"HTTP {resp.status_code}: {body}"
-                    if attempt < 2:
-                        await asyncio.sleep(2 ** attempt + 1)
+                    if attempt < 1:
+                        await asyncio.sleep(2)
                     continue
 
                 if resp.status_code >= 400:
@@ -253,7 +263,6 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
                         f"query: {query[:60]}"
                     )
                     last_error = f"HTTP {resp.status_code}: {body}"
-                    # Client errors (4xx except 429) are not retryable
                     return []
 
                 data = resp.json()
@@ -266,28 +275,28 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
             except httpx.TimeoutException:
                 last_error = "timeout"
                 logger.warning(
-                    f"[LEADS] Exa search timeout (attempt {attempt+1}/3): {query[:60]}"
+                    f"[LEADS] Exa search timeout (attempt {attempt+1}/2): {query[:60]}"
                 )
-                if attempt < 2:
-                    await asyncio.sleep(2)
+                if attempt < 1:
+                    await asyncio.sleep(1)
             except httpx.ConnectError as e:
                 last_error = f"connect error: {e}"
                 logger.warning(
-                    f"[LEADS] Exa connect error (attempt {attempt+1}/3): {e}"
+                    f"[LEADS] Exa connect error (attempt {attempt+1}/2): {e}"
                 )
-                if attempt < 2:
-                    await asyncio.sleep(2)
+                if attempt < 1:
+                    await asyncio.sleep(1)
             except Exception as e:
                 last_error = str(e)
                 logger.warning(
-                    f"[LEADS] Exa search error (attempt {attempt+1}/3): "
+                    f"[LEADS] Exa search error (attempt {attempt+1}/2): "
                     f"{type(e).__name__}: {e}"
                 )
-                if attempt < 2:
-                    await asyncio.sleep(2)
+                if attempt < 1:
+                    await asyncio.sleep(1)
 
     logger.error(
-        f"[LEADS] Exa search failed after 3 attempts: {last_error} — "
+        f"[LEADS] Exa search failed after 2 attempts: {last_error} — "
         f"query: {query[:80]}"
     )
     return []
@@ -341,63 +350,54 @@ def _extract_lead_info(result: dict, persona: dict) -> dict | None:
 
 
 async def _call_vps_proxy(prompt: str) -> str:
-    """Call VPS Claude proxy for lead generation."""
+    """Call VPS Claude proxy for lead generation. Single attempt, fail fast."""
     url = f"{settings.vps_proxy_url.rstrip('/')}/chat/completions"
     async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
-        for attempt in range(2):
-            t0 = _time.monotonic()
-            try:
-                logger.info(f"[LEADS] VPS proxy attempt {attempt+1}/2")
-                resp = await client.post(
-                    url,
-                    headers={
-                        "Content-Type": "application/json",
-                        "X-Proxy-Key": settings.vps_proxy_key,
-                    },
-                    json={
-                        "model": settings.analysis_model,
-                        "max_tokens": 4000,
-                        "messages": [
-                            {
-                                "role": "system",
-                                "content": "You are mckoutie — a startup growth expert. Return valid JSON only, no markdown wrapping.",
-                            },
-                            {"role": "user", "content": prompt},
-                        ],
-                    },
-                )
-                elapsed = _time.monotonic() - t0
-                if resp.status_code == 200:
-                    data = resp.json()
-                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                    if content:
-                        logger.info(f"[LEADS] VPS proxy responded in {elapsed:.1f}s ({len(content)} chars)")
-                        return content
-                logger.warning(f"[LEADS] VPS proxy {resp.status_code} after {elapsed:.1f}s")
-                await asyncio.sleep(2 + random.uniform(0, 2))
-            except Exception as e:
-                elapsed = _time.monotonic() - t0
-                logger.warning(f"[LEADS] VPS proxy error after {elapsed:.1f}s: {e}")
-                await asyncio.sleep(2 + random.uniform(0, 2))
+        t0 = _time.monotonic()
+        try:
+            logger.info("[LEADS] VPS proxy attempt (single shot)")
+            resp = await client.post(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Proxy-Key": settings.vps_proxy_key,
+                },
+                json={
+                    "model": settings.analysis_model,
+                    "max_tokens": 4000,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are mckoutie — a startup growth expert. Return valid JSON only, no markdown wrapping.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                },
+            )
+            elapsed = _time.monotonic() - t0
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                if content:
+                    logger.info(f"[LEADS] VPS proxy responded in {elapsed:.1f}s ({len(content)} chars)")
+                    return content
+            logger.warning(f"[LEADS] VPS proxy {resp.status_code} after {elapsed:.1f}s — falling back")
+        except Exception as e:
+            elapsed = _time.monotonic() - t0
+            logger.warning(f"[LEADS] VPS proxy error after {elapsed:.1f}s: {e} — falling back")
     raise RuntimeError("VPS proxy failed for lead generation")
 
 
 async def _call_llm(prompt: str) -> str:
-    """Call LLM — tries VPS proxy first, then OpenRouter Gemini (fast), then OpenRouter Claude.
+    """Call LLM — tries OpenRouter Gemini (fast) first, then VPS proxy, then OpenRouter Claude.
 
+    Persona generation is structured JSON — speed matters more than depth.
     Client is reused across retries to avoid connection overhead.
     """
     last_error = None
 
-    # Try VPS proxy first (Claude Max — free)
-    if settings.has_vps_proxy:
-        try:
-            return await _call_vps_proxy(prompt)
-        except RuntimeError as e:
-            last_error = str(e)
-            logger.warning(f"[LEADS] VPS proxy failed: {e}")
-
-    # Try OpenRouter — fast model (Gemini), then Claude fallback
+    # Try OpenRouter FIRST — fast model (Gemini) for persona gen
+    # Speed > depth for structured JSON output
     if settings.openrouter_api_key:
         models_to_try = [_PERSONA_MODEL, _PERSONA_MODEL_FALLBACK]
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
@@ -462,6 +462,14 @@ async def _call_llm(prompt: str) -> str:
 
                 if model == _PERSONA_MODEL:
                     logger.info(f"[LEADS] Fast model failed, trying fallback ({_PERSONA_MODEL_FALLBACK})")
+
+    # Try VPS proxy (Claude Max — free but slower)
+    if settings.has_vps_proxy:
+        try:
+            return await _call_vps_proxy(prompt)
+        except RuntimeError as e:
+            last_error = str(e)
+            logger.warning(f"[LEADS] VPS proxy failed: {e}")
 
     # Fallback to Anthropic direct
     if settings.anthropic_api_key:

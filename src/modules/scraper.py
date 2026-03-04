@@ -213,8 +213,8 @@ async def _scrape_exa(url: str) -> dict | None:
             },
             json={
                 "urls": [url],
-                "text": True,
-                "highlights": True,
+                "text": {"maxCharacters": 10000},
+                "highlights": {"numSentences": 3},
             },
         )
         resp.raise_for_status()
@@ -313,9 +313,11 @@ async def _search_exa_about(url: str) -> dict | None:
             json={
                 "query": f"{search_query} startup product",
                 "numResults": 5,
-                "text": True,
-                "includeDomains": [domain],
                 "type": "keyword",
+                "includeDomains": [domain],
+                "contents": {
+                    "text": {"maxCharacters": 3000},
+                },
             },
         )
         resp.raise_for_status()
@@ -333,8 +335,10 @@ async def _search_exa_about(url: str) -> dict | None:
                 json={
                     "query": f"what is {search_query} {domain}",
                     "numResults": 5,
-                    "text": True,
                     "type": "auto",
+                    "contents": {
+                        "text": {"maxCharacters": 3000},
+                    },
                 },
             )
             resp2.raise_for_status()

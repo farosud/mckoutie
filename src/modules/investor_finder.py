@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 # Semaphore to avoid blasting Exa with too many concurrent requests
 _EXA_SEMAPHORE = asyncio.Semaphore(3)
 
-# Shared Exa timeout config — 60s per request, 10s connect
-_EXA_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+# Shared Exa timeout config — 15s per request, 5s connect
+# Exa typically responds in <2s; anything over 15s is hung
+_EXA_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 
 async def find_investors(startup_data: str, analysis: dict) -> dict:
@@ -98,14 +99,14 @@ async def _find_competitors(name: str, one_liner: str, market: str) -> list[dict
     competitors = []
     seen = set()
 
+    # Keep queries short and focused — Exa works best with concise semantic queries
     queries = [
-        f"{market} startup raised funding round investors",
-        f"{name} competitors funding series seed raised",
-        f"{one_liner} startups venture capital investment",
+        f"{market} startup funding raised"[:100],
+        f"{name} competitors raised seed series"[:100],
     ]
 
-    # Run all competitor queries in parallel
-    tasks = [_exa_search_throttled(q, num_results=5) for q in queries[:3]]
+    # Run competitor queries in parallel (reduced from 3 to 2)
+    tasks = [_exa_search_throttled(q, num_results=5) for q in queries]
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
     success_count = 0
@@ -150,15 +151,14 @@ async def _find_market_investors(name: str, market: str, one_liner: str) -> list
     investors = []
     seen_urls = set()
 
+    # Keep queries short and focused for reliable Exa results
     queries = [
-        f"investors funding {market} startups",
-        f"angel investors {market} portfolio",
-        f"VC firm investing in {one_liner[:50]}",
-        f"seed investor {market} 2024 2025",
+        f"investors funding {market} startups"[:100],
+        f"VC angel investor {market} portfolio"[:100],
     ]
 
-    # Run all investor queries in parallel
-    tasks = [_exa_search_throttled(q, num_results=5) for q in queries[:3]]
+    # Run investor queries in parallel (reduced from 3 to 2)
+    tasks = [_exa_search_throttled(q, num_results=5) for q in queries]
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
     success_count = 0
@@ -270,7 +270,7 @@ async def _exa_search_throttled(query: str, num_results: int = 5) -> list[dict]:
 
 
 async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
-    """Run an Exa semantic search with text content. Retries on 429/5xx."""
+    """Run an Exa semantic search with text content. Retries once on 429/5xx."""
     if not settings.exa_api_key:
         logger.warning("[INVESTORS] Exa search skipped — no API key")
         return []
@@ -278,10 +278,10 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
     last_error = None
     # Create client ONCE outside the retry loop to reuse connections
     async with httpx.AsyncClient(timeout=_EXA_TIMEOUT) as client:
-        for attempt in range(3):
+        for attempt in range(2):  # 2 attempts max (down from 3)
             try:
                 logger.info(
-                    f"[INVESTORS] Exa search attempt {attempt+1}/3: {query[:80]}"
+                    f"[INVESTORS] Exa search attempt {attempt+1}/2: {query[:80]}"
                 )
                 resp = await client.post(
                     "https://api.exa.ai/search",
@@ -294,16 +294,16 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
                         "numResults": num_results,
                         "type": "auto",
                         "contents": {
-                            "text": {"maxCharacters": 1000},
+                            "text": {"maxCharacters": 500},
                         },
                     },
                 )
 
                 if resp.status_code == 429:
-                    wait = 2 ** (attempt + 1) + random.uniform(0, 2)
+                    wait = 2 ** (attempt + 1) + random.uniform(0, 1)
                     logger.warning(
                         f"[INVESTORS] Exa rate limited (429), backing off {wait:.1f}s "
-                        f"(attempt {attempt+1}/3) — query: {query[:60]}"
+                        f"(attempt {attempt+1}/2) — query: {query[:60]}"
                     )
                     await asyncio.sleep(wait)
                     last_error = "rate limited (429)"
@@ -320,11 +320,11 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
                     body = resp.text[:300]
                     logger.warning(
                         f"[INVESTORS] Exa server error {resp.status_code} "
-                        f"(attempt {attempt+1}/3): {body}"
+                        f"(attempt {attempt+1}/2): {body}"
                     )
                     last_error = f"HTTP {resp.status_code}: {body}"
-                    if attempt < 2:
-                        await asyncio.sleep(2 ** attempt + 1)
+                    if attempt < 1:
+                        await asyncio.sleep(2)
                     continue
 
                 if resp.status_code >= 400:
@@ -334,7 +334,6 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
                         f"query: {query[:60]}"
                     )
                     last_error = f"HTTP {resp.status_code}: {body}"
-                    # Client errors (4xx except 429) are not retryable
                     return []
 
                 data = resp.json()
@@ -347,28 +346,28 @@ async def _exa_search(query: str, num_results: int = 5) -> list[dict]:
             except httpx.TimeoutException:
                 last_error = "timeout"
                 logger.warning(
-                    f"[INVESTORS] Exa search timeout (attempt {attempt+1}/3): {query[:60]}"
+                    f"[INVESTORS] Exa search timeout (attempt {attempt+1}/2): {query[:60]}"
                 )
-                if attempt < 2:
-                    await asyncio.sleep(2)
+                if attempt < 1:
+                    await asyncio.sleep(1)
             except httpx.ConnectError as e:
                 last_error = f"connect error: {e}"
                 logger.warning(
-                    f"[INVESTORS] Exa connect error (attempt {attempt+1}/3): {e}"
+                    f"[INVESTORS] Exa connect error (attempt {attempt+1}/2): {e}"
                 )
-                if attempt < 2:
-                    await asyncio.sleep(2)
+                if attempt < 1:
+                    await asyncio.sleep(1)
             except Exception as e:
                 last_error = str(e)
                 logger.warning(
-                    f"[INVESTORS] Exa search error (attempt {attempt+1}/3): "
+                    f"[INVESTORS] Exa search error (attempt {attempt+1}/2): "
                     f"{type(e).__name__}: {e}"
                 )
-                if attempt < 2:
-                    await asyncio.sleep(2)
+                if attempt < 1:
+                    await asyncio.sleep(1)
 
     logger.error(
-        f"[INVESTORS] Exa search failed after 3 attempts: {last_error} — "
+        f"[INVESTORS] Exa search failed after 2 attempts: {last_error} — "
         f"query: {query[:80]}"
     )
     return []
