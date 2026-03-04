@@ -38,12 +38,24 @@ async def poll_loop(poller: TwitterPoller):
         f"mentions every {settings.poll_interval_seconds}s"
     )
 
+    poll_count = 0
+    total_requests = 0
+
     while not _shutdown.is_set():
+        poll_count += 1
         try:
             requests = poller.poll_mentions()
 
             if requests:
+                total_requests += len(requests)
                 logger.info(f"Found {len(requests)} new request(s)")
+
+            # Heartbeat every 10 polls (~10 min) so we know it's alive
+            if poll_count % 10 == 0:
+                logger.info(
+                    f"Heartbeat: {poll_count} polls completed, "
+                    f"{total_requests} total requests processed"
+                )
 
             # Process each request (sequentially to avoid rate limits)
             for req in requests:
@@ -55,7 +67,23 @@ async def poll_loop(poller: TwitterPoller):
                     logger.error(f"Unhandled error processing {req.tweet_id}: {e}")
 
         except Exception as e:
-            logger.error(f"Error in poll loop: {e}")
+            error_msg = str(e).lower()
+            if "403" in error_msg or "forbidden" in error_msg:
+                logger.error(
+                    "Twitter API returned 403 Forbidden. "
+                    "This usually means your API access tier is too low. "
+                    "The mentions endpoint requires Basic ($100/mo) or higher. "
+                    "Check: https://developer.twitter.com/en/portal/products"
+                )
+                # Back off longer on auth errors
+                await asyncio.sleep(300)
+                continue
+            elif "429" in error_msg or "rate" in error_msg:
+                logger.warning("Twitter rate limited — backing off 2 minutes")
+                await asyncio.sleep(120)
+                continue
+            else:
+                logger.error(f"Error in poll loop: {e}")
 
         # Wait for the next poll interval (or until shutdown)
         try:

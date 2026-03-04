@@ -156,8 +156,16 @@ class TwitterPoller:
                     )
 
         except tweepy.TooManyRequests:
-            logger.warning("Rate limited — backing off")
+            logger.warning("Rate limited — backing off 60s")
             time.sleep(60)
+        except tweepy.Forbidden as e:
+            logger.error(
+                f"Twitter 403 Forbidden: {e}. "
+                "Mention timeline requires Basic tier ($100/mo) or higher. "
+                "Free tier only allows tweet creation, not reading mentions."
+            )
+        except tweepy.Unauthorized as e:
+            logger.error(f"Twitter 401 Unauthorized: {e}. Check your API keys are correct.")
         except tweepy.TwitterServerError as e:
             logger.error(f"Twitter server error: {e}")
         except Exception as e:

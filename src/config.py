@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     bot_username: str = "mckoutie"
     report_price_usd: int = 100
     poll_interval_seconds: int = 60
-    analysis_model: str = "claude-sonnet-4-6-20250514"
+    analysis_model: str = "claude-sonnet-4-20250514"
     analysis_max_tokens: int = 12000
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

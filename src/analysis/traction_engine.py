@@ -206,7 +206,7 @@ async def _call_openrouter(prompt: str) -> str:
                         "X-Title": "mckoutie",
                     },
                     json={
-                        "model": "anthropic/claude-sonnet-4",
+                        "model": f"anthropic/{settings.analysis_model}",
                         "max_tokens": settings.analysis_max_tokens,
                         "messages": [
                             {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
