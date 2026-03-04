@@ -251,11 +251,35 @@ async def generate_capybara_image(
                 logger.error(f"No message in choices[0]: {choices[0]}")
                 return None
 
+            # Check for images in message.images first (Gemini Flash format)
+            images = message.get("images")
+            if images and isinstance(images, list):
+                for img in images:
+                    if isinstance(img, dict):
+                        # Format: {"url": "data:image/...;base64,..."} or {"b64_json": "..."}
+                        url = img.get("url", "")
+                        if url.startswith("data:image"):
+                            logger.info("Found image in message.images (url format)")
+                            return _save_base64_image(url)
+                        b64 = img.get("b64_json") or img.get("data") or img.get("base64", "")
+                        if b64:
+                            logger.info("Found image in message.images (b64 format)")
+                            return _save_raw_base64(b64)
+                    elif isinstance(img, str):
+                        # Could be a data URL or raw base64
+                        if img.startswith("data:image"):
+                            logger.info("Found image in message.images (string data URL)")
+                            return _save_base64_image(img)
+                        if len(img) > 1000:
+                            logger.info("Found image in message.images (string base64)")
+                            return _save_raw_base64(img)
+                logger.warning(f"message.images had {len(images)} items but none parseable")
+
             content = message.get("content")
 
-            # Handle None content explicitly
+            # Handle None content — only error if we also didn't find images above
             if content is None:
-                logger.error(f"Got None content. Full response keys: {list(data.keys())}, message keys: {list(message.keys())}")
+                logger.error(f"Got None content and no usable images. message keys: {list(message.keys())}")
                 return None
 
             # String content — could be base64 data URL or text
