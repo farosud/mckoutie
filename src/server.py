@@ -316,15 +316,17 @@ async def landing_ar():
 <!-- Hero -->
 <div class="hero">
     <div class="flag-bar"></div>
-    <div class="logo">mck<span>ou</span>tie</div>
-    <p class="tagline-main">Consultoría de crecimiento para startups argentinas</p>
-    <p class="tagline-sub">
-        Análisis de tracción con IA. 19 canales de crecimiento rankeados para TU startup.
-        Plan de 90 días. Sin chamuyo, sin PowerPoints de 200 slides. $39/mes.
-    </p>
-    <a class="cta-hero" href="https://x.com/intent/tweet?text=@mckoutie%20analyse%20my%20startup%20" target="_blank">
-        Analizá tu startup ahora
-    </a>
+    <div class="hero-content-box">
+        <div class="logo">mck<span>ou</span>tie</div>
+        <p class="tagline-main">Consultoría de crecimiento para startups argentinas</p>
+        <p class="tagline-sub">
+            Análisis de tracción con IA. 19 canales de crecimiento rankeados para TU startup.
+            Plan de 90 días. Sin chamuyo, sin PowerPoints de 200 slides. $39/mes.
+        </p>
+        <a class="cta-hero" href="https://x.com/intent/tweet?text=@mckoutie%20analyse%20my%20startup%20" target="_blank">
+            Analizá tu startup ahora
+        </a>
+    </div>
     <div class="scroll-hint">↓ scrolleá para más</div>
 </div>
 
