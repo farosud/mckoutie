@@ -32,26 +32,81 @@ async def resolve_url(url: str) -> str:
         return url  # Not a short URL, no need to resolve
 
     logger.info(f"Resolving shortened URL: {url}")
+
+    # Method 1: Follow HTTP redirects with a real browser User-Agent
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
     }
-    # Try GET first (more reliable than HEAD for URL shorteners)
-    for method in ["GET", "HEAD"]:
-        try:
-            async with httpx.AsyncClient(timeout=20, follow_redirects=True, max_redirects=10) as client:
-                if method == "GET":
-                    resp = await client.get(url, headers=headers)
-                else:
-                    resp = await client.head(url, headers=headers)
-                resolved = str(resp.url)
-                if resolved != url:
-                    logger.info(f"Resolved {url} -> {resolved} (via {method})")
-                    return resolved
-                logger.info(f"{method} returned same URL: {url}")
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, max_redirects=15) as client:
+            resp = await client.get(url, headers=headers)
+            resolved = str(resp.url)
+            if resolved != url and hostname not in (urlparse(resolved).hostname or ""):
+                logger.info(f"Resolved {url} -> {resolved} (via redirect)")
                 return resolved
-        except Exception as e:
-            logger.warning(f"URL resolve {method} failed for {url}: {e}")
-            continue
+
+            # If redirect didn't leave the short domain, parse HTML for meta refresh
+            # t.co sometimes returns HTML with a meta refresh or JS redirect
+            body = resp.text[:5000]
+
+            # Check meta refresh: <meta http-equiv="refresh" content="0;url=...">
+            meta_match = re.search(
+                r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\']?\d+;\s*url=([^"\'>\s]+)',
+                body, re.IGNORECASE,
+            )
+            if meta_match:
+                meta_url = meta_match.group(1).strip()
+                logger.info(f"Resolved {url} -> {meta_url} (via meta refresh)")
+                return meta_url
+
+            # Check JS redirect: window.location = "..." or location.href = "..."
+            js_match = re.search(
+                r'(?:window\.location|location\.href)\s*=\s*["\']([^"\']+)["\']',
+                body, re.IGNORECASE,
+            )
+            if js_match:
+                js_url = js_match.group(1).strip()
+                logger.info(f"Resolved {url} -> {js_url} (via JS redirect)")
+                return js_url
+
+            # Check for <a> tag with the URL (t.co pages often have a visible link)
+            # e.g. <a href="https://example.com" ...>https://example.com</a>
+            link_match = re.search(
+                r'<a[^>]+href=["\']?(https?://[^"\'>\s]+)["\']?[^>]*>',
+                body, re.IGNORECASE,
+            )
+            if link_match:
+                link_url = link_match.group(1).strip()
+                link_host = urlparse(link_url).hostname or ""
+                # Make sure it's not linking back to the shortener
+                if link_host and link_host != hostname:
+                    logger.info(f"Resolved {url} -> {link_url} (via HTML link)")
+                    return link_url
+
+            # Check title tag for a URL (some shorteners put the target in the title)
+            title_match = re.search(r'<title[^>]*>(https?://[^\s<]+)</title>', body, re.IGNORECASE)
+            if title_match:
+                title_url = title_match.group(1).strip()
+                logger.info(f"Resolved {url} -> {title_url} (via title tag)")
+                return title_url
+
+            logger.info(f"Redirect returned same domain for {url}, using: {resolved}")
+            return resolved
+    except Exception as e:
+        logger.warning(f"URL resolve failed for {url}: {e}")
+
+    # Method 2: HEAD request as last resort
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True, max_redirects=15) as client:
+            resp = await client.head(url, headers=headers)
+            resolved = str(resp.url)
+            if resolved != url:
+                logger.info(f"Resolved {url} -> {resolved} (via HEAD)")
+                return resolved
+    except Exception as e:
+        logger.warning(f"HEAD resolve failed for {url}: {e}")
 
     logger.warning(f"All resolve methods failed for {url}, returning original")
     return url

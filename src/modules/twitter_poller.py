@@ -8,16 +8,22 @@ Supported formats:
   @mckoutie roast my startup https://example.com
 """
 
+import json
+import os
 import re
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import tweepy
 
 from src.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Persistent state file for surviving restarts/deploys
+STATE_FILE = Path(os.getenv("STATE_DIR", "/tmp")) / "mckoutie_poller_state.json"
 
 # Patterns to detect the request
 TRIGGER_PATTERNS = [
@@ -59,15 +65,37 @@ class AnalysisRequest:
 
 class TwitterPoller:
     def __init__(self):
+        # Use pure OAuth 1.0a — bearer token causes Tweepy to pick app-auth
+        # for some endpoints, which fails on pay-per-use tier.
         self.client = tweepy.Client(
-            bearer_token=settings.twitter_bearer_token,
             consumer_key=settings.twitter_api_key,
             consumer_secret=settings.twitter_api_secret,
             access_token=settings.twitter_access_token,
             access_token_secret=settings.twitter_access_token_secret,
             wait_on_rate_limit=True,
         )
-        self.last_seen_id: str | None = None
+        self.last_seen_id: str | None = self._load_state()
+
+    def _load_state(self) -> str | None:
+        """Load last_seen_id from disk to survive restarts."""
+        try:
+            if STATE_FILE.exists():
+                data = json.loads(STATE_FILE.read_text())
+                last_id = data.get("last_seen_id")
+                if last_id:
+                    logger.info(f"Restored last_seen_id from disk: {last_id}")
+                return last_id
+        except Exception as e:
+            logger.warning(f"Failed to load poller state: {e}")
+        return None
+
+    def _save_state(self):
+        """Persist last_seen_id to disk."""
+        try:
+            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            STATE_FILE.write_text(json.dumps({"last_seen_id": self.last_seen_id}))
+        except Exception as e:
+            logger.warning(f"Failed to save poller state: {e}")
 
     def _is_trigger(self, text: str) -> bool:
         """Check if tweet text contains a trigger phrase."""
@@ -169,8 +197,8 @@ class TwitterPoller:
         except tweepy.Forbidden as e:
             logger.error(
                 f"Twitter 403 Forbidden: {e}. "
-                "Mention timeline requires Basic tier ($100/mo) or higher. "
-                "Free tier only allows tweet creation, not reading mentions."
+                "Mention reading requires pay-per-use credits. "
+                "Check your balance at developer.x.com or ensure app permissions include Read+Write."
             )
         except tweepy.Unauthorized as e:
             logger.error(f"Twitter 401 Unauthorized: {e}. Check your API keys are correct.")

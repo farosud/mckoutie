@@ -1,3 +1,5 @@
+from urllib.parse import unquote
+
 from pydantic_settings import BaseSettings
 
 
@@ -10,6 +12,11 @@ class Settings(BaseSettings):
     twitter_bearer_token: str = ""
     twitter_client_id: str = ""
     twitter_client_secret: str = ""
+
+    def model_post_init(self, __context) -> None:
+        # Keep bearer token as-is — the X API pay-per-use tier requires
+        # the URL-encoded form (with %2B, %3D etc.) for read endpoints.
+        pass
 
     # Anthropic
     anthropic_api_key: str = ""
@@ -40,19 +47,18 @@ class Settings(BaseSettings):
 
     @property
     def has_twitter_write(self) -> bool:
-        """Can we post tweets (need all 4 OAuth keys + bearer)?"""
+        """Can we post tweets (need all 4 OAuth keys)?"""
         return all([
             self.twitter_api_key,
             self.twitter_api_secret,
             self.twitter_access_token,
             self.twitter_access_token_secret,
-            self.twitter_bearer_token,
         ])
 
     @property
     def has_twitter_read(self) -> bool:
-        """Can we read mentions (only need bearer token)?"""
-        return bool(self.twitter_bearer_token)
+        """Can we read mentions (need OAuth 1.0a keys)?"""
+        return self.has_twitter_write
 
     @property
     def has_llm(self) -> bool:

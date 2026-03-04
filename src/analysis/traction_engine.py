@@ -266,6 +266,8 @@ async def _call_openrouter(prompt: str) -> str:
 
 def _parse_json_response(text: str) -> dict:
     """Extract JSON from LLM response text, handling various formats."""
+    logger.info(f"Parsing LLM response ({len(text)} chars)")
+
     # Try direct parse
     try:
         return json.loads(text)
@@ -277,19 +279,76 @@ def _parse_json_response(text: str) -> dict:
     if json_match:
         try:
             return json.loads(json_match.group(1))
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as e:
+            logger.warning(f"Code block JSON parse failed: {e}")
 
-    # Last resort — find first { to last }
+    # Find first { to last } — the main extraction method
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1:
+        candidate = text[start : end + 1]
         try:
-            return json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            pass
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Brace-delimited JSON parse failed: {e}")
 
-    return {"error": "Failed to parse analysis", "raw_response": text[:2000]}
+            # Try to repair common LLM JSON issues
+            repaired = candidate
+            # Fix trailing commas before } or ]
+            repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+            # Fix unescaped newlines in string values
+            repaired = re.sub(r'(?<=": ")(.*?)(?="[,}\]])', lambda m: m.group(0).replace("\n", "\\n"), repaired)
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
+
+            # If JSON is truncated (max_tokens hit), try to close it
+            if not candidate.rstrip().endswith("}"):
+                logger.info("Attempting to repair truncated JSON...")
+                truncated = _repair_truncated_json(candidate)
+                if truncated:
+                    try:
+                        return json.loads(truncated)
+                    except json.JSONDecodeError:
+                        pass
+
+    # Log what we got for debugging
+    logger.error(f"All JSON parse attempts failed. Response starts with: {text[:500]}")
+    logger.error(f"Response ends with: {text[-500:]}")
+
+    return {"error": "Failed to parse analysis", "raw_response": text[:3000]}
+
+
+def _repair_truncated_json(text: str) -> str | None:
+    """Attempt to close truncated JSON by balancing braces and brackets."""
+    # Count open/close braces and brackets
+    open_braces = text.count("{") - text.count("}")
+    open_brackets = text.count("[") - text.count("]")
+
+    if open_braces <= 0 and open_brackets <= 0:
+        return None  # Not truncated in the way we can fix
+
+    # Remove any trailing partial string/key
+    # Find the last complete value (ending with , or : or ] or } or ")
+    cleaned = text.rstrip()
+    # Strip trailing partial content after last complete token
+    last_good = max(
+        cleaned.rfind(","),
+        cleaned.rfind('"'),
+        cleaned.rfind("]"),
+        cleaned.rfind("}"),
+    )
+    if last_good > len(cleaned) // 2:  # sanity check — don't trim too much
+        cleaned = cleaned[:last_good + 1]
+
+    # Remove trailing comma if present
+    cleaned = cleaned.rstrip().rstrip(",")
+
+    # Close brackets then braces
+    cleaned += "]" * open_brackets + "}" * open_braces
+
+    return cleaned
 
 
 async def run_traction_analysis(startup_data: str) -> dict:

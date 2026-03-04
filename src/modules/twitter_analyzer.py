@@ -31,8 +31,12 @@ async def analyze_twitter_profile(handle: str) -> dict:
             "profile_summary": str,        # compiled intelligence
         }
     """
+    # Use OAuth 1.0a — bearer token is unreliable on pay-per-use tier
     client = tweepy.Client(
-        bearer_token=settings.twitter_bearer_token,
+        consumer_key=settings.twitter_api_key,
+        consumer_secret=settings.twitter_api_secret,
+        access_token=settings.twitter_access_token,
+        access_token_secret=settings.twitter_access_token_secret,
         wait_on_rate_limit=True,
     )
 

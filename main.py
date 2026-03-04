@@ -71,9 +71,9 @@ async def poll_loop(poller: TwitterPoller):
             if "403" in error_msg or "forbidden" in error_msg:
                 logger.error(
                     "Twitter API returned 403 Forbidden. "
-                    "This usually means your API access tier is too low. "
-                    "The mentions endpoint requires Basic ($100/mo) or higher. "
-                    "Check: https://developer.twitter.com/en/portal/products"
+                    "Ensure your app has Read+Write permissions and "
+                    "pay-per-use credits are available. "
+                    "Check: https://developer.x.com"
                 )
                 # Back off longer on auth errors
                 await asyncio.sleep(300)
@@ -107,9 +107,9 @@ def _validate_config():
         warnings.append("No scraping service (EXA_API_KEY or FIRECRAWL_API_KEY) — will use Jina/raw fallback")
 
     if not settings.has_twitter_read:
-        warnings.append("No TWITTER_BEARER_TOKEN — Twitter polling disabled")
+        warnings.append("Missing Twitter OAuth keys — Twitter polling disabled")
     elif not settings.has_twitter_write:
-        warnings.append("Missing Twitter OAuth keys — can read mentions but can't reply")
+        warnings.append("Missing some Twitter OAuth keys — can read mentions but can't reply")
 
     if not settings.has_payments:
         warnings.append("No STRIPE_SECRET_KEY — payments disabled, reports will be free")
