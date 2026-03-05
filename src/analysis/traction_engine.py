@@ -736,28 +736,28 @@ async def _generate_deep_dives(startup_data: str, analysis: dict, channels_batch
 
     text = None
 
-    # PRIMARY: VPS proxy Sonnet (free, model IDs fixed)
+    # PRIMARY: VPS proxy Haiku (fast for research generation)
     if settings.has_vps_proxy:
         try:
             text = await _call_vps_proxy(
                 prompt,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model,
+                model="claude-haiku-4",
                 max_tokens=8000,
-                timeout_seconds=120.0,
+                timeout_seconds=90.0,
             )
         except RuntimeError as e:
             logger.warning(f"VPS proxy failed for deep dives: {e}")
 
-    # FALLBACK: OpenRouter Sonnet
+    # FALLBACK: OpenRouter Haiku
     if text is None and settings.openrouter_api_key:
         try:
             text = await _call_openrouter(
                 prompt,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model_fallback,
+                model="anthropic/claude-haiku-4",
                 max_tokens=8000,
-                timeout_seconds=120.0,
+                timeout_seconds=90.0,
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter failed for deep dives: {e}")
@@ -862,35 +862,46 @@ async def run_quick_analysis(startup_data: str) -> dict:
 
 
 async def run_core_analysis(startup_data: str) -> dict:
-    """Phase A: Get company profile + 19 channel scores (no deep_dive). Fast ~30-60s.
+    """Phase A: Get company profile + 19 channel scores (no deep_dive). Fast ~10-30s.
 
-    Uses VPS proxy Sonnet as PRIMARY (free, model IDs fixed to match proxy).
-    Falls back to OpenRouter Sonnet if VPS is down.
+    Uses Haiku on VPS (fast, ~10-20s) as PRIMARY.
+    Falls back to OpenRouter Haiku, then Sonnet.
     """
     prompt = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
     text = None
 
-    # PRIMARY: VPS proxy Sonnet (free, fast ~30-60s)
+    # PRIMARY: VPS proxy Haiku (free, fast ~10-20s)
     if settings.has_vps_proxy:
-        logger.info("[PHASE A] Running core analysis via VPS proxy (Sonnet)...")
+        logger.info("[PHASE A] Running core analysis via VPS proxy (Haiku — fast scoring)...")
         try:
             text = await _call_vps_proxy(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model, max_tokens=16000, timeout_seconds=300.0,
+                model="claude-haiku-4", max_tokens=8000, timeout_seconds=120.0,
             )
         except RuntimeError as e:
-            logger.warning(f"VPS proxy failed for Phase A: {e}")
+            logger.warning(f"VPS proxy Haiku failed for Phase A: {e}")
 
-    # FALLBACK: OpenRouter Sonnet
+    # FALLBACK 1: OpenRouter Haiku (cheap, fast)
+    if text is None and settings.openrouter_api_key:
+        logger.info("[PHASE A] Falling back to OpenRouter (Haiku)...")
+        try:
+            text = await _call_openrouter(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="anthropic/claude-haiku-4", max_tokens=8000, timeout_seconds=90.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter Haiku failed for Phase A: {e}")
+
+    # FALLBACK 2: OpenRouter Sonnet (slower but reliable)
     if text is None and settings.openrouter_api_key:
         logger.info("[PHASE A] Falling back to OpenRouter (Sonnet)...")
         try:
             text = await _call_openrouter(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model_fallback, max_tokens=16000, timeout_seconds=180.0,
+                model=settings.analysis_model_fallback, max_tokens=8000, timeout_seconds=180.0,
             )
         except RuntimeError as e:
-            logger.warning(f"OpenRouter failed for Phase A: {e}")
+            logger.warning(f"OpenRouter Sonnet failed for Phase A: {e}")
 
     # LAST RESORT: Anthropic direct
     if text is None and settings.anthropic_api_key:
@@ -898,7 +909,7 @@ async def run_core_analysis(startup_data: str) -> dict:
         try:
             text = await _call_anthropic(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model, max_tokens=16000,
+                model=settings.analysis_model, max_tokens=8000,
             )
         except RuntimeError as e:
             return {"error": f"All LLM providers failed: {e}"}
@@ -942,7 +953,7 @@ async def run_traction_analysis(startup_data: str) -> dict:
                 prompt_a,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
                 model=settings.analysis_model,
-                max_tokens=16000,
+                max_tokens=8000,
                 timeout_seconds=300.0,
             )
         except RuntimeError as e:
@@ -955,7 +966,7 @@ async def run_traction_analysis(startup_data: str) -> dict:
                 prompt_a,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
                 model=settings.analysis_model_fallback,
-                max_tokens=16000,
+                max_tokens=8000,
                 timeout_seconds=180.0,
             )
         except RuntimeError as e:
@@ -968,7 +979,7 @@ async def run_traction_analysis(startup_data: str) -> dict:
                 prompt_a,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
                 model=settings.analysis_model,
-                max_tokens=16000,
+                max_tokens=8000,
             )
         except RuntimeError as e:
             logger.error(f"Anthropic also failed for Phase A: {e}")

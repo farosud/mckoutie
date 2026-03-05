@@ -56,8 +56,8 @@ class Settings(BaseSettings):
     analysis_model_fallback: str = "anthropic/claude-sonnet-4"  # Sonnet on OpenRouter fallback
     hot_take_model: str = "claude-opus-4"  # Opus on VPS — hot take synthesis only (short, high-value)
     hot_take_model_fallback: str = "anthropic/claude-opus-4"  # Opus on OpenRouter fallback
-    persona_model: str = "claude-sonnet-4"  # Sonnet on VPS — persona/lead/investor generation
-    persona_model_fallback: str = "anthropic/claude-sonnet-4"  # Sonnet on OpenRouter fallback
+    persona_model: str = "claude-haiku-4"  # Haiku on VPS — fast persona/lead/investor generation
+    persona_model_fallback: str = "anthropic/claude-haiku-4"  # Haiku on OpenRouter fallback
     update_model: str = "claude-haiku-4"  # Haiku on VPS — market updates (delta analysis)
     update_model_fallback: str = "anthropic/claude-haiku-4-5"  # Haiku on OpenRouter fallback
     analysis_max_tokens: int = 32000

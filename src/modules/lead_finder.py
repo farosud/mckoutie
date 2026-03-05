@@ -26,8 +26,8 @@ _EXA_SEMAPHORE = asyncio.Semaphore(3)
 # Exa typically responds in <2s; anything over 15s is hung
 _EXA_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
-# LLM timeout — 300s per attempt (Opus needs more time for rich persona generation)
-_LLM_TIMEOUT = httpx.Timeout(300.0, connect=15.0)
+# LLM timeout — 120s per attempt (Haiku is fast for persona generation)
+_LLM_TIMEOUT = httpx.Timeout(120.0, connect=15.0)
 
 # Use Sonnet for persona generation — fast + good enough for structured output
 # Opus is reserved for the main 19-channel analysis (the product)
@@ -650,8 +650,17 @@ async def _call_llm(prompt: str) -> str:
                         logger.warning(f"[LEADS] OpenRouter error after {elapsed:.1f}s: {e}")
                         await asyncio.sleep(2 + random.uniform(0, 2))
 
-                if model == _PERSONA_MODEL:
+                if model == settings.persona_model_fallback:
                     logger.info(f"[LEADS] Fast model failed, trying fallback ({_PERSONA_MODEL_FALLBACK})")
+
+    # Try VPS proxy (free, uses Sonnet)
+    if settings.vps_proxy_url and settings.vps_proxy_key:
+        try:
+            logger.info("[LEADS] Falling back to VPS proxy")
+            return await _call_vps_proxy(prompt)
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"[LEADS] VPS proxy also failed: {e}")
 
     # Last resort: Anthropic direct
     if settings.anthropic_api_key:

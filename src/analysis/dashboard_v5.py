@@ -1830,16 +1830,16 @@ def _streaming_js():
   var channelsPhaseComplete = false;
   var sseGotData = false;
 
-  // Safety net: if SSE delivers nothing in 15s, fall back to polling.
+  // Safety net: if SSE delivers nothing in 90s, fall back to polling.
   // Background analysis was already started by the page load, so polling will find data.
   var sseTimeout = setTimeout(function(){
     if(!sseGotData){
-      console.log('[mckoutie] SSE timeout — no data in 15s, switching to polling');
+      console.log('[mckoutie] SSE timeout — no data in 90s, switching to polling');
       es.close();
       setStatus('Connecting via polling...');
       fallbackPoll();
     }
-  }, 15000);
+  }, 90000);
 
   es.addEventListener('thinking', function(e){
     sseGotData = true;
