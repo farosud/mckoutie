@@ -12,6 +12,7 @@ Design language:
 
 from html import escape
 from datetime import datetime, timezone
+import json as _json
 
 
 def render_dashboard_v5(
@@ -80,7 +81,10 @@ def render_dashboard_v5(
   </main>
 </div>
 
-<script>{_js()}</script>
+<script>
+var __REPORT_DATA__={_report_json(analysis, startup_name, report_id, tier)};
+{_js()}
+</script>
 </body>
 </html>"""
 
@@ -162,7 +166,7 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .nav{
   width:200px;background:var(--panel);border-right:1px solid var(--border);
   padding:16px 0;position:sticky;top:48px;height:calc(100vh - 48px);
-  overflow-y:auto;flex-shrink:0;
+  overflow-y:auto;flex-shrink:0;display:flex;flex-direction:column;
 }
 .nav-group{margin-bottom:20px}
 .nav-label{font-size:9px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);padding:0 16px;margin-bottom:6px;font-weight:600}
@@ -370,6 +374,15 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
   .hdr-id,.hdr-time{display:none}
 }
 
+/* ── Download button ── */
+.dl-btn{
+  display:flex;align-items:center;gap:6px;width:calc(100% - 24px);margin:0 12px;
+  padding:8px 12px;background:var(--surface2);border:1px solid var(--border2);
+  border-radius:var(--radius);color:var(--text2);font-size:11px;font-weight:500;
+  font-family:var(--sans);cursor:pointer;transition:all .12s;
+}
+.dl-btn:hover{background:var(--surface3);color:var(--white);border-color:var(--accent)}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -420,6 +433,11 @@ def _nav(n_leads, n_investors, n_channels):
     <a href="#plan" class="nav-link">90-Day Plan</a>
     <a href="#budget" class="nav-link">Budget</a>
     <a href="#risks" class="nav-link">Risk Matrix</a>
+  </div>
+  <div class="nav-group" style="margin-top:auto;padding-top:16px;border-top:1px solid var(--border)">
+    <button class="dl-btn" onclick="downloadMd()" title="Download full report as Markdown">
+      <span style="font-size:14px">&#8615;</span> Download .md
+    </button>
   </div>
 </nav>"""
 
@@ -822,6 +840,124 @@ def _section_footer(name):
 # ═══════════════════════════════════════════════
 def _js():
     return """
+// Download as .md
+function downloadMd(){
+  var d=__REPORT_DATA__;
+  var md='# '+d.name+' — mckoutie & company Strategy Brief\\n\\n';
+  md+='**Report ID:** '+d.id+'\\n';
+  md+='**Generated:** '+new Date().toISOString().slice(0,10)+'\\n\\n';
+
+  // Executive summary
+  md+='## Executive Summary\\n\\n'+d.summary+'\\n\\n';
+  if(d.hot_take) md+='> **Hot Take:** '+d.hot_take+'\\n\\n';
+
+  // Bullseye
+  var b=d.bullseye||{};
+  md+='## Bullseye Framework\\n\\n';
+  if(b.inner_ring){md+='### Inner Ring (Do Now)\\n';(b.inner_ring.channels||[]).forEach(function(c){md+='- '+c+'\\n'});md+='\\n';}
+  if(b.promising){md+='### Promising (Test Next)\\n';(b.promising.channels||[]).forEach(function(c){md+='- '+c+'\\n'});md+='\\n';}
+
+  // Channel analysis
+  var ch=(d.channels||[]).slice().sort(function(a,b){return(b.score||0)-(a.score||0)});
+  md+='## Channel Analysis\\n\\n';
+  md+='| # | Channel | Score | Effort | Timeline | Budget | Insight |\\n';
+  md+='|---|---------|-------|--------|----------|--------|---------|\\n';
+  ch.forEach(function(c,i){
+    md+='| '+(i+1)+' | '+(c.channel||'')+' | '+(c.score||0)+'/10 | '+(c.effort||'')+' | '+(c.timeline||'')+' | '+(c.budget||'')+' | '+(c.killer_insight||'').slice(0,100)+' |\\n';
+  });
+  md+='\\n';
+
+  // Leads
+  var lr=d.leads||{};
+  var personas=lr.personas||[];
+  var leads=lr.leads||[];
+  if(personas.length){
+    md+='## Customer Personas\\n\\n';
+    personas.forEach(function(p){
+      md+='### '+p.name+'\\n';
+      md+=(p.description||'')+'\\n\\n';
+      if(p.platforms&&p.platforms.length) md+='**Platforms:** '+ p.platforms.join(', ')+'\\n\\n';
+      if(p.pain_signals&&p.pain_signals.length){md+='**Pain signals:**\\n';p.pain_signals.forEach(function(s){md+='- '+s+'\\n'});md+='\\n';}
+    });
+  }
+  if(leads.length){
+    md+='## Potential Leads\\n\\n';
+    md+='| # | Name | Title | Platform | Handle | Score | Why |\\n';
+    md+='|---|------|-------|----------|--------|-------|-----|\\n';
+    leads.forEach(function(l,i){
+      md+='| '+(i+1)+' | '+(l.name||'')+' | '+(l.title||'')+' | '+(l.platform||'')+' | '+(l.handle||'')+' | '+(l.score||0)+'/10 | '+(l.relevance||'').slice(0,120)+' |\\n';
+    });
+    md+='\\n';
+  }
+
+  // Investors
+  var ir=d.investors||{};
+  var comps=ir.competitors||[];
+  var ci=ir.competitor_investors||[];
+  var mi=ir.market_investors||[];
+  if(comps.length){
+    md+='## Competitor Landscape\\n\\n';
+    md+='| Company | Funding | Description |\\n';
+    md+='|---------|---------|-------------|\\n';
+    comps.forEach(function(c){md+='| '+(c.name||'')+' | '+(c.funding||'—')+' | '+(c.description||'').slice(0,100)+' |\\n'});
+    md+='\\n';
+  }
+  var allInv=ci.concat(mi);
+  if(allInv.length){
+    md+='## Investors\\n\\n';
+    md+='| # | Investor | Type | Focus |\\n';
+    md+='|---|----------|------|-------|\\n';
+    allInv.forEach(function(inv,i){md+='| '+(i+1)+' | '+(inv.name||'')+' | '+(inv.type||'')+' | '+(inv.focus||'').slice(0,120)+' |\\n'});
+    md+='\\n';
+  }
+
+  // Strategy (only if tier allows)
+  var plan=d.plan||{};
+  if(plan.month_1){
+    md+='## 90-Day Action Plan\\n\\n';
+    ['month_1','month_2','month_3'].forEach(function(k,i){
+      var m=plan[k]||{};
+      md+='### Month '+(i+1)+': '+(m.focus||'')+'\\n';
+      (m.actions||[]).forEach(function(a){md+='- '+a+'\\n'});
+      if(m.target_metric) md+='**Target:** '+m.target_metric+'\\n';
+      if(m.budget) md+='**Budget:** '+m.budget+'\\n';
+      md+='\\n';
+    });
+  }
+
+  var budget=d.budget||{};
+  if(budget.breakdown&&budget.breakdown.length){
+    md+='## Budget Allocation\\n\\n';
+    if(budget.total_recommended) md+='**Total recommended:** '+budget.total_recommended+'\\n\\n';
+    md+='| Channel | Amount | Rationale |\\n';
+    md+='|---------|--------|-----------|\\n';
+    budget.breakdown.forEach(function(b){md+='| '+(b.channel||'')+' | '+(b.amount||'')+' | '+(b.rationale||'')+' |\\n'});
+    md+='\\n';
+  }
+
+  var risks=d.risks||[];
+  if(risks.length){
+    md+='## Risk Matrix\\n\\n';
+    md+='| Risk | Probability | Impact | Mitigation |\\n';
+    md+='|------|-------------|--------|------------|\\n';
+    risks.forEach(function(r){md+='| '+(r.risk||'')+' | '+(r.probability||'')+' | '+(r.impact||'')+' | '+(r.mitigation||'')+' |\\n'});
+    md+='\\n';
+  }
+
+  if(d.moat){md+='## Competitive Moat\\n\\n'+d.moat+'\\n\\n';}
+
+  md+='---\\n*Generated by [mckoutie & company](https://mckoutie.com)*\\n';
+
+  // Trigger download
+  var blob=new Blob([md],{type:'text/markdown;charset=utf-8'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url;
+  a.download=(d.name||'report').replace(/[^a-zA-Z0-9]/g,'-').toLowerCase()+'-mckoutie.md';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // Active nav link on scroll
 (function(){
   var links=document.querySelectorAll('.nav-link');
@@ -851,6 +987,26 @@ def _js():
 # ═══════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════
+def _report_json(analysis, name, report_id, tier):
+    """Serialize report data for client-side .md generation."""
+    safe = {
+        "name": name,
+        "id": report_id,
+        "tier": tier,
+        "summary": analysis.get("executive_summary", ""),
+        "hot_take": analysis.get("hot_take", ""),
+        "channels": analysis.get("channel_analysis", []),
+        "bullseye": analysis.get("bullseye_ranking", {}),
+        "plan": analysis.get("ninety_day_plan", {}),
+        "budget": analysis.get("budget_allocation", {}),
+        "risks": analysis.get("risk_matrix", []),
+        "moat": analysis.get("competitive_moat", ""),
+        "leads": analysis.get("leads_research", {}),
+        "investors": analysis.get("investor_research", {}),
+    }
+    return _json.dumps(safe, default=str)
+
+
 def _tag_class(platform):
     p = (platform or "").lower()
     if "twitter" in p or "x" in p:
