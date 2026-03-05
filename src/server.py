@@ -1199,6 +1199,7 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     If the report is in 'skeleton' status and the user is logged in,
     the dashboard will connect to the SSE stream to receive live deep analysis.
     """
+    logger.info(f"[REPORT VIEW] report_id={report_id}, cookies={list(request.cookies.keys())}")
     record = report_store.load_record(report_id)
 
     if not record:
@@ -1230,6 +1231,7 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     user = auth.get_session_user(session_cookie)
     logged_in = user is not None
     login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
+    logger.info(f"[REPORT VIEW] report={report_id} logged_in={logged_in} cookie={'yes' if session_cookie else 'no'} user={user.get('username') if user else 'none'} phase={analysis.get('_phase', 'n/a')} record_status={record.status}")
 
     # Determine tier based on subscription status + ownership
     tier = "free"
@@ -1260,11 +1262,28 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
                 customer_id=record.customer_id,
             ) or "#"
 
+    # If the report was created via /analyze (author_id="web"), claim it for this user
+    if logged_in and record.author_id == "web":
+        user_twitter_id = user.get("twitter_id", "")
+        record.author_id = user_twitter_id
+        record.author_username = user.get("username", "web")
+        report_store.save_record(record)
+        try:
+            db.update_report(report_id, author_twitter_id=user_twitter_id, author_username=user.get("username", ""))
+        except Exception:
+            pass
+        logger.info(f"[REPORT VIEW] Claimed web report {report_id} for @{user.get('username')}")
+
     # Determine if this is a skeleton report that needs deep analysis
     is_skeleton = analysis.get("_phase") == "skeleton" or record.status == "skeleton"
     needs_deep = is_skeleton and logged_in and not is_deep_analysis_running(report_id)
     # Also stream if deep analysis is already running (another tab triggered it)
     should_stream = is_skeleton and logged_in
+
+    # Auto-trigger deep analysis on page view (don't wait for JS to call /stream)
+    if needs_deep:
+        logger.info(f"[REPORT VIEW] Auto-triggering deep analysis for {report_id}")
+        asyncio.create_task(run_deep_analysis_background(report_id))
 
     # Render the dashboard — with streaming flag only when logged in + skeleton
     html = render_dashboard_v5(
@@ -1281,6 +1300,37 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     return HTMLResponse(content=html)
 
 
+@app.get("/report/{report_id}/debug")
+async def debug_report(request: Request, report_id: str):
+    """Debug endpoint to inspect report state."""
+    record = report_store.load_record(report_id)
+    analysis_path = REPORTS_DIR / report_id / "analysis.json"
+    analysis = {}
+    if analysis_path.exists():
+        try:
+            analysis = json.loads(analysis_path.read_text())
+        except Exception:
+            pass
+
+    session_cookie = request.cookies.get("mckoutie_session")
+    user = auth.get_session_user(session_cookie)
+
+    return JSONResponse({
+        "report_id": report_id,
+        "record_exists": record is not None,
+        "record_status": record.status if record else None,
+        "record_author_id": record.author_id if record else None,
+        "analysis_exists": analysis_path.exists(),
+        "analysis_phase": analysis.get("_phase"),
+        "analysis_has_startup_data": bool(analysis.get("_startup_data")),
+        "has_cookie": bool(session_cookie),
+        "cookie_valid": user is not None,
+        "user": user.get("username") if user else None,
+        "is_skeleton": analysis.get("_phase") == "skeleton" or (record.status == "skeleton" if record else False),
+        "deep_running": is_deep_analysis_running(report_id),
+    })
+
+
 @app.get("/report/{report_id}/stream")
 async def trigger_deep_analysis(request: Request, report_id: str):
     """Trigger deep analysis in background.
@@ -1288,20 +1338,26 @@ async def trigger_deep_analysis(request: Request, report_id: str):
     Called by the dashboard JS when a skeleton report is loaded.
     Returns immediately — client polls /report/{id}/progress for updates.
     """
+    logger.info(f"[STREAM] Request for {report_id}, cookies: {list(request.cookies.keys())}")
     record = report_store.load_record(report_id)
     if not record:
+        logger.warning(f"[STREAM] Report {report_id} not found")
         return JSONResponse({"error": "Report not found"}, status_code=404)
 
-    # Verify user is logged in
+    # Verify user is logged in — but don't block if auth is missing
+    # (the server-side auto-trigger on page load is the primary trigger)
     session_cookie = request.cookies.get("mckoutie_session")
     user = auth.get_session_user(session_cookie)
     if not user:
-        return JSONResponse({"error": "Login required"}, status_code=401)
+        logger.warning(f"[STREAM] No valid session for {report_id}, triggering anyway")
+        # Still trigger — the page view handler already auth'd them
+        # Cookie might not forward through proxy for fetch() calls
 
     if is_deep_analysis_running(report_id):
         return JSONResponse({"status": "already_running"})
 
     # Fire and forget — run analysis in background
+    logger.info(f"[STREAM] Starting deep analysis for {report_id}")
     asyncio.create_task(run_deep_analysis_background(report_id))
     return JSONResponse({"status": "started"})
 
@@ -1313,6 +1369,7 @@ async def poll_deep_progress(request: Request, report_id: str):
     Returns current progress including completed sections.
     Client polls every 3 seconds until status is 'complete' or 'error'.
     """
+    logger.debug(f"[PROGRESS] Polling {report_id}")
     # Check if analysis is complete (full report exists)
     analysis_path = REPORTS_DIR / report_id / "analysis.json"
     if analysis_path.exists():

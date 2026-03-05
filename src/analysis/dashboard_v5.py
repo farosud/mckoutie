@@ -1739,22 +1739,27 @@ def _streaming_js():
   setPip('channels','active');
 
   var seen = {};  // track which sections we've rendered
+  var notStartedCount = 0;
 
-  // Trigger the analysis
+  // Trigger the analysis (also auto-triggered server-side on page load)
+  setStatus('Starting analysis...');
   fetch('/report/'+rid+'/stream')
     .then(function(r){ return r.json(); })
     .then(function(d){
       if(d.status==='already_running'){
-        setStatus('Analysis already running — checking progress...');
+        setStatus('Analysis in progress — watching for results...');
+      } else if(d.error){
+        setStatus('Server: '+d.error+'. Polling for results...');
       } else {
         setStatus('Analyzing 19 growth channels...');
       }
-      // Start polling
+      // Start polling regardless
       pollProgress();
     })
     .catch(function(e){
-      setStatus('Failed to start analysis. Try refreshing.');
-      pips.forEach(function(p){ p.style.background='#ff4444'; });
+      // Even if /stream call fails, analysis was auto-triggered server-side
+      setStatus('Connecting to analysis engine...');
+      pollProgress();
     });
 
   function pollProgress(){
@@ -1832,11 +1837,24 @@ def _streaming_js():
           return; // stop polling
         }
 
+        // If not_started for too long, try triggering again
+        if(status==='not_started'){
+          notStartedCount = (notStartedCount||0) + 1;
+          if(notStartedCount > 5){
+            setStatus('Analysis is taking longer than expected. Retrying...');
+            fetch('/report/'+rid+'/stream').catch(function(){});
+            notStartedCount = 0;
+          }
+        } else {
+          notStartedCount = 0;
+        }
+
         // Keep polling every 3 seconds
         setTimeout(pollProgress, 3000);
       })
       .catch(function(e){
         // Network error — retry in 5 seconds
+        setStatus('Reconnecting...');
         setTimeout(pollProgress, 5000);
       });
   }

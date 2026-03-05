@@ -12,7 +12,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-REPORTS_DIR = Path(__file__).parent.parent.parent / "reports"
+# Use Railway persistent volume if available, else local
+_data_dir = Path("/data")
+REPORTS_DIR = _data_dir / "reports" if _data_dir.is_dir() else Path(__file__).parent.parent.parent / "reports"
 
 
 @dataclass
