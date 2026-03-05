@@ -42,6 +42,15 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="mckoutie", description="McKinsey at home")
 
+# CORS — allow SSE from mckoutie.com to Railway directly
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://www.mckoutie.com", "https://mckoutie.com"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
 STATIC_DIR = Path(__file__).parent.parent / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -1282,14 +1291,16 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     # but if someone got past it (or came back with a cookie), always stream.
     should_stream = is_skeleton
 
-    # NOTE: Don't start background analysis here — let the SSE /stream endpoint drive it.
-    # Starting it here causes a race condition: background task claims the lock,
-    # then SSE gets "already_running" and falls back to polling (which can't stream events).
-    # If SSE drops mid-analysis, the lock is released and the next SSE reconnect picks it up.
-    if is_skeleton:
-        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — SSE will drive deep analysis")
+    # Start background analysis from page load — SSE will stream from _deep_progress.
+    # This ensures data is available even if SSE connection drops (polling fallback picks it up).
+    if is_skeleton and not is_deep_analysis_running(report_id):
+        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — starting background analysis + SSE will stream")
+        asyncio.create_task(run_deep_analysis_background(report_id))
+    elif is_skeleton:
+        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — analysis already running, SSE will stream")
 
     # Render the dashboard — with streaming flag for skeleton reports
+    # SSE connects DIRECTLY to Railway (bypasses Vercel proxy which kills long-lived connections)
     html = render_dashboard_v5(
         analysis=analysis,
         startup_name=record.startup_name,
@@ -1300,6 +1311,7 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         logged_in=logged_in,
         login_url=login_url,
         streaming=should_stream,
+        sse_base_url=settings.railway_public_url if should_stream else "",
     )
     return HTMLResponse(content=html)
 

@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # App
     port: int = 8000
     app_url: str = "https://www.mckoutie.com"
+    railway_public_url: str = "https://mckoutie-bot-production.up.railway.app"  # Direct Railway URL for SSE (bypasses Vercel proxy)
     bot_username: str = "mckoutie"
     report_price_usd: int = 39  # starter tier monthly subscription price
     growth_price_usd: int = 200  # growth tier monthly subscription price

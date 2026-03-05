@@ -25,6 +25,7 @@ def render_dashboard_v5(
     logged_in: bool = True,
     login_url: str = "",
     streaming: bool = False,
+    sse_base_url: str = "",
 ) -> str:
     profile = analysis.get("company_profile", {})
     channels = analysis.get("channel_analysis", [])
@@ -158,6 +159,7 @@ var __REPORT_DATA__={_report_json(analysis, startup_name, report_id, tier)};
 var __STREAMING__={'true' if streaming else 'false'};
 var __REPORT_ID__="{report_id}";
 var __TIER__="{tier}";
+var __SSE_BASE__="{sse_base_url}";
 {_js()}
 {_streaming_js() if streaming else ""}
 {_chat_widget_js(report_id)}
@@ -1822,16 +1824,32 @@ def _streaming_js():
   setStatus('Connecting to analysis engine...');
   setPip('channels','active');
 
-  var es = new EventSource('/report/'+rid+'/stream');
+  // Connect SSE directly to Railway (bypasses Vercel proxy which kills SSE streams)
+  var sseBase = __SSE_BASE__ || '';
+  var es = new EventSource(sseBase+'/report/'+rid+'/stream');
   var channelsPhaseComplete = false;
+  var sseGotData = false;
+
+  // Safety net: if SSE delivers nothing in 15s, fall back to polling.
+  // Background analysis was already started by the page load, so polling will find data.
+  var sseTimeout = setTimeout(function(){
+    if(!sseGotData){
+      console.log('[mckoutie] SSE timeout — no data in 15s, switching to polling');
+      es.close();
+      setStatus('Connecting via polling...');
+      fallbackPoll();
+    }
+  }, 15000);
 
   es.addEventListener('thinking', function(e){
+    sseGotData = true;
     var d = JSON.parse(e.data);
     setStatus(d.message||'');
     setThinking(d.detail||'');
   });
 
   es.addEventListener('channel', function(e){
+    sseGotData = true;
     var d = JSON.parse(e.data);
     var ch = d.channel;
     if(!ch) return;
@@ -1998,7 +2016,7 @@ def _streaming_js():
   var pollPersonaCount = 0;
 
   function fallbackPoll(){
-    fetch('/report/'+rid+'/progress')
+    fetch(sseBase+'/report/'+rid+'/progress')
       .then(function(r){ return r.json(); })
       .then(function(d){
         if(d.status==='complete'){
