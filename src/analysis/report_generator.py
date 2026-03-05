@@ -25,6 +25,64 @@ def generate_report_id(startup_name: str, timestamp: str | None = None) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
+def generate_teaser_from_quick(quick: dict) -> list[str]:
+    """
+    Generate 3-4 tweet thread from QUICK analysis (Haiku output).
+    Uses top_3_channels format instead of full bullseye/channel_analysis.
+    """
+    profile = quick.get("company_profile", {})
+    name = profile.get("name", "Your startup")
+    one_liner = profile.get("one_liner", "")
+    stage = profile.get("stage", "unknown")
+    hot_take = quick.get("hot_take", "")
+    top_channels = quick.get("top_3_channels", [])
+
+    # Tweet 1: The headline
+    tweet1 = f"mckoutie just analyzed {name}.\n\n"
+    if one_liner:
+        tweet1 += f"{one_liner}\n\n"
+    tweet1 += f"Stage: {stage}\n"
+    if profile.get("unique_angle"):
+        tweet1 += f"Edge: {profile['unique_angle'][:120]}\n"
+    tweet1 += "\nFull analysis incoming"
+
+    # Tweet 2: Top channels
+    tweet2 = f"Top 3 growth channels for {name}:\n\n"
+    for i, ch in enumerate(top_channels[:3], 1):
+        ch_name = ch.get("channel", "?")
+        score = ch.get("score", "?")
+        why = ch.get("one_liner_why", "")
+        tweet2 += f"{i}. {ch_name} ({score}/10)\n"
+    if top_channels and top_channels[0].get("one_liner_why"):
+        tweet2 += f"\n{top_channels[0]['one_liner_why'][:140]}"
+
+    # Tweet 3: Hot take
+    tweet3 = ""
+    if hot_take:
+        if len(hot_take) > 260:
+            hot_take = hot_take[:257] + "..."
+        tweet3 = f"Hot take on {name}:\n\n{hot_take}"
+
+    # Tweet 4: CTA
+    tweet4 = (
+        f"Full 19-channel analysis for {name}:\n"
+        f"- 90-day action plan\n"
+        f"- 10 potential leads + 10 investors\n"
+        f"- Specific tactics per channel\n\n"
+        f"Sign up to see the live dashboard\n\n"
+        f"{{report_link}}"
+    )
+
+    tweets = [tweet1, tweet2, tweet3, tweet4]
+    cleaned = []
+    for t in tweets:
+        if t:
+            if len(t) > 280:
+                t = t[:277] + "..."
+            cleaned.append(t)
+    return cleaned
+
+
 def generate_teaser_thread(analysis: dict) -> list[str]:
     """
     Generate 3-4 tweet thread for the public teaser.

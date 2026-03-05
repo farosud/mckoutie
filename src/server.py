@@ -12,6 +12,7 @@ Endpoints:
   GET  /stats                       — basic stats
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from sse_starlette.sse import EventSourceResponse
 
 from src.config import settings
 from src.modules import auth, payments, report_store, db
@@ -30,6 +32,7 @@ from src.analysis.dashboard_renderer import render_dashboard
 from src.analysis.dashboard_v3 import render_dashboard_v3
 from src.analysis.dashboard_v4 import render_dashboard_v4
 from src.analysis.dashboard_v5 import render_dashboard_v5
+from src.orchestrator import run_deep_analysis, is_deep_analysis_running
 
 REPORTS_DIR = Path(__file__).parent.parent / "reports"
 
@@ -1171,7 +1174,11 @@ async def test_report_v5(request: Request, tier: str = "free", gate: str = ""):
 
 @app.get("/report/{report_id}", response_class=HTMLResponse)
 async def view_report(request: Request, report_id: str, paid: str | None = None):
-    """View a report — dashboard with tier-based content gating."""
+    """View a report — dashboard with tier-based content gating.
+
+    If the report is in 'skeleton' status and the user is logged in,
+    the dashboard will connect to the SSE stream to receive live deep analysis.
+    """
     record = report_store.load_record(report_id)
 
     if not record:
@@ -1198,7 +1205,7 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         except Exception:
             pass
 
-    # Check login status first — ALL visitors must register with Twitter
+    # Check login status
     session_cookie = request.cookies.get("mckoutie_session")
     user = auth.get_session_user(session_cookie)
     logged_in = user is not None
@@ -1219,7 +1226,6 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         if is_owner and record.status in ("active", "paid"):
             tier = record.tier or "starter"
         elif is_owner:
-            # Check Supabase for active subscription (in case file record is stale)
             try:
                 sub = db.get_subscription_for_report(report_id, user_twitter_id)
                 if sub and sub.get("status") == "active":
@@ -1234,7 +1240,13 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
                 customer_id=record.customer_id,
             ) or "#"
 
-    # Always render the dashboard — overlay login gate if not authenticated
+    # Determine if this is a skeleton report that needs deep analysis
+    is_skeleton = analysis.get("_phase") == "skeleton" or record.status == "skeleton"
+    needs_deep = is_skeleton and logged_in and not is_deep_analysis_running(report_id)
+    # Also stream if deep analysis is already running (another tab triggered it)
+    should_stream = is_skeleton and logged_in
+
+    # Render the dashboard — with streaming flag only when logged in + skeleton
     html = render_dashboard_v5(
         analysis=analysis,
         startup_name=record.startup_name,
@@ -1244,8 +1256,45 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         upgrade_url=upgrade_url,
         logged_in=logged_in,
         login_url=login_url,
+        streaming=should_stream,
     )
     return HTMLResponse(content=html)
+
+
+@app.get("/report/{report_id}/stream")
+async def stream_deep_analysis(request: Request, report_id: str):
+    """SSE endpoint — streams deep analysis results as they complete.
+
+    Called by the dashboard JS when a skeleton report is loaded.
+    Triggers Phase 2 (full 19-channel analysis + leads + investors).
+    """
+    record = report_store.load_record(report_id)
+    if not record:
+        return JSONResponse({"error": "Report not found"}, status_code=404)
+
+    # Verify user is logged in
+    session_cookie = request.cookies.get("mckoutie_session")
+    user = auth.get_session_user(session_cookie)
+    if not user:
+        return JSONResponse({"error": "Login required"}, status_code=401)
+
+    async def event_generator():
+        try:
+            async for event in run_deep_analysis(report_id):
+                if await request.is_disconnected():
+                    break
+                yield {
+                    "event": event.get("event", "message"),
+                    "data": json.dumps(event.get("data", {})),
+                }
+        except Exception as e:
+            logger.error(f"SSE stream error for {report_id}: {e}")
+            yield {
+                "event": "error",
+                "data": json.dumps({"message": str(e)}),
+            }
+
+    return EventSourceResponse(event_generator())
 
 
 @app.post("/webhook/stripe")

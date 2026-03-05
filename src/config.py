@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     analysis_max_tokens: int = 32000
     hot_take_max_tokens: int = 2000  # Opus hot take is short — keep it fast
 
+    # Advisor Service (VPS — per-user AI strategy agents)
+    advisor_url: str = "http://165.227.18.32:3458"
+    advisor_api_key: str = "mckoutie-advisor-2026"
+
     # Stripe price IDs (created on first checkout if empty)
     stripe_starter_price_id: str = ""
     stripe_growth_price_id: str = ""

@@ -577,6 +577,96 @@ async def _generate_hot_take(analysis: dict) -> str:
     return "No hot take available — all LLM providers failed for the synthesis step."
 
 
+QUICK_ANALYSIS_PROMPT = """Analyze this startup and produce a QUICK overview for a teaser tweet thread.
+This is NOT the full analysis — just enough for a compelling 3-4 tweet thread.
+
+## STARTUP DATA
+
+{startup_data}
+
+## YOUR TASK
+
+Return valid JSON with this structure:
+
+{{
+  "company_profile": {{
+    "name": "string — company/product name",
+    "one_liner": "string — what they do in one sentence",
+    "stage": "string — pre-launch | launched | growing | scaling",
+    "market": "string — target market description",
+    "unique_angle": "string — what makes them genuinely different"
+  }},
+  "top_3_channels": [
+    {{
+      "channel": "string — channel name from the 19 traction channels",
+      "score": "number 1-10",
+      "one_liner_why": "string — one sentence on why this channel fits"
+    }}
+  ],
+  "hot_take": "string — 2-3 sentences. The one provocative insight nobody would tell them but they NEED to hear. Specific to THIS startup, not generic. Screenshottable."
+}}
+
+Be specific to THIS startup. The hot take should be sharp enough that people screenshot it.
+"""
+
+
+async def run_quick_analysis(startup_data: str) -> dict:
+    """
+    Run a FAST lightweight analysis — just enough for tweet thread + skeleton report.
+    Uses Haiku for speed (~5-10s). Returns company profile, top 3 channels, and hot take.
+    """
+    prompt = QUICK_ANALYSIS_PROMPT.format(startup_data=startup_data)
+    text = None
+
+    # Try VPS proxy with Haiku (fastest)
+    if settings.has_vps_proxy:
+        logger.info("[QUICK] Running quick analysis via VPS proxy (Haiku)...")
+        try:
+            text = await _call_vps_proxy(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.update_model,  # Haiku — fast + cheap
+                max_tokens=2000,
+                timeout_seconds=30.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"[QUICK] VPS proxy failed: {e}")
+
+    # Fallback to OpenRouter with Haiku
+    if text is None and settings.openrouter_api_key:
+        logger.info("[QUICK] Falling back to OpenRouter (Haiku)...")
+        try:
+            text = await _call_openrouter(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.update_model_fallback,
+                max_tokens=2000,
+                timeout_seconds=30.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"[QUICK] OpenRouter also failed: {e}")
+
+    # Last resort: Anthropic direct
+    if text is None and settings.anthropic_api_key:
+        logger.info("[QUICK] Falling back to Anthropic direct (Haiku)...")
+        try:
+            text = await _call_anthropic(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.update_model,
+                max_tokens=2000,
+            )
+        except RuntimeError as e:
+            logger.error(f"[QUICK] All providers failed: {e}")
+            return {"error": f"All LLM providers failed: {e}"}
+
+    if text is None:
+        return {"error": "No LLM provider available"}
+
+    result = _parse_json_response(text)
+    return result
+
+
 async def run_traction_analysis(startup_data: str) -> dict:
     """
     Run the full 19-channel traction analysis.
