@@ -1280,10 +1280,8 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     # Also stream if deep analysis is already running (another tab triggered it)
     should_stream = is_skeleton and logged_in
 
-    # Auto-trigger deep analysis on page view (don't wait for JS to call /stream)
-    if needs_deep:
-        logger.info(f"[REPORT VIEW] Auto-triggering deep analysis for {report_id}")
-        asyncio.create_task(run_deep_analysis_background(report_id))
+    # Deep analysis is triggered by the SSE connection from the client JS.
+    # No background task needed — the EventSource connection drives it.
 
     # Render the dashboard — with streaming flag only when logged in + skeleton
     html = render_dashboard_v5(
@@ -1332,34 +1330,37 @@ async def debug_report(request: Request, report_id: str):
 
 
 @app.get("/report/{report_id}/stream")
-async def trigger_deep_analysis(request: Request, report_id: str):
-    """Trigger deep analysis in background.
+async def stream_deep_analysis(request: Request, report_id: str):
+    """True SSE endpoint — streams analysis events in real-time.
 
-    Called by the dashboard JS when a skeleton report is loaded.
-    Returns immediately — client polls /report/{id}/progress for updates.
+    The client connects via EventSource and receives events as they happen:
+    thinking, channel, persona, lead, competitor, investor, section, advisor_ready, done, error.
     """
-    logger.info(f"[STREAM] Request for {report_id}, cookies: {list(request.cookies.keys())}")
+    logger.info(f"[SSE] Stream request for {report_id}")
     record = report_store.load_record(report_id)
     if not record:
-        logger.warning(f"[STREAM] Report {report_id} not found")
         return JSONResponse({"error": "Report not found"}, status_code=404)
 
-    # Verify user is logged in — but don't block if auth is missing
-    # (the server-side auto-trigger on page load is the primary trigger)
-    session_cookie = request.cookies.get("mckoutie_session")
-    user = auth.get_session_user(session_cookie)
-    if not user:
-        logger.warning(f"[STREAM] No valid session for {report_id}, triggering anyway")
-        # Still trigger — the page view handler already auth'd them
-        # Cookie might not forward through proxy for fetch() calls
+    async def event_generator():
+        try:
+            async for event in run_deep_analysis(report_id):
+                if await request.is_disconnected():
+                    logger.info(f"[SSE] Client disconnected for {report_id}")
+                    break
+                ev_type = event.get("event", "status")
+                ev_data = event.get("data", {})
+                yield {
+                    "event": ev_type,
+                    "data": json.dumps(ev_data),
+                }
+        except Exception as e:
+            logger.error(f"[SSE] Error streaming {report_id}: {e}", exc_info=True)
+            yield {
+                "event": "error",
+                "data": json.dumps({"message": str(e)}),
+            }
 
-    if is_deep_analysis_running(report_id):
-        return JSONResponse({"status": "already_running"})
-
-    # Fire and forget — run analysis in background
-    logger.info(f"[STREAM] Starting deep analysis for {report_id}")
-    asyncio.create_task(run_deep_analysis_background(report_id))
-    return JSONResponse({"status": "started"})
+    return EventSourceResponse(event_generator())
 
 
 @app.get("/report/{report_id}/progress")
