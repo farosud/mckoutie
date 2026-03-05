@@ -134,25 +134,34 @@ async def landing_ar():
 
         /* Hero */
         .hero {
-            min-height: 100vh; display: flex; flex-direction: column;
-            justify-content: center; align-items: center; text-align: center;
-            padding: 2rem; position: relative;
+            display: grid; grid-template-columns: 1fr 1fr;
+            min-height: 90vh; align-items: center;
+            padding: 4rem 3rem; gap: 2rem;
+            position: relative; overflow: hidden;
             background: url('https://images.unsplash.com/photo-1662393372595-861498121e90?w=1920&q=80&auto=format&fit=crop') center center / cover no-repeat;
         }
         .hero::before {
             content: ''; position: absolute; inset: 0;
-            background: rgba(10,10,10,0.55);
+            background: rgba(10,10,10,0.75);
             pointer-events: none;
         }
         .hero-content-box {
             position: relative; z-index: 1;
-            background: rgba(10,10,10,0.8);
+            background: rgba(10,10,10,0.85);
             border: 1px solid rgba(117,170,219,0.2);
             border-radius: 12px;
             padding: 3rem 2.5rem;
             max-width: 650px;
             backdrop-filter: blur(8px);
             -webkit-backdrop-filter: blur(8px);
+        }
+        .hero-building {
+            position: relative; z-index: 1;
+            display: flex; justify-content: center; align-items: center;
+        }
+        .hero-building svg {
+            max-width: 100%; height: auto; max-height: 75vh;
+            filter: drop-shadow(0 0 40px rgba(117,170,219,0.15));
         }
         .flag-bar {
             width: 100%; height: 3px; position: absolute; top: 0;
@@ -307,6 +316,10 @@ async def landing_ar():
 
         /* Responsive */
         @media (max-width: 700px) {
+            .hero { grid-template-columns: 1fr; text-align: center; padding: 2rem 1.5rem; min-height: auto; }
+            .hero-content-box { order: 2; }
+            .hero-building { order: 1; }
+            .hero-building svg { max-height: 40vh; }
             .logo { font-size: 2.5rem; }
             .tagline-main { font-size: 1.3rem; }
             .problema-grid, .features, .pricing-grid { grid-template-columns: 1fr; }
@@ -329,6 +342,188 @@ async def landing_ar():
         <a class="cta-hero" href="https://x.com/intent/tweet?text=@mckoutie%20analyse%20my%20startup%20" target="_blank">
             Analizá tu startup ahora
         </a>
+    </div>
+    </div>
+    <div class="hero-building">
+        <svg viewBox="0 0 400 600" xmlns="http://www.w3.org/2000/svg" width="400" height="600">
+            <!-- Sky background -->
+            <defs>
+                <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#0a1628"/>
+                    <stop offset="100%" stop-color="#0a0a0a"/>
+                </linearGradient>
+                <linearGradient id="bldg" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#1a2a4a"/>
+                    <stop offset="100%" stop-color="#0f1a2f"/>
+                </linearGradient>
+                <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0%" stop-color="#F5C518"/>
+                    <stop offset="100%" stop-color="#e0a800"/>
+                </linearGradient>
+                <filter id="glow">
+                    <feGaussianBlur stdDeviation="3" result="blur"/>
+                    <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+            </defs>
+            <rect width="400" height="600" fill="url(#sky)"/>
+
+            <!-- Stars -->
+            <circle cx="30" cy="40" r="1.5" fill="#fff" opacity="0.6"/>
+            <circle cx="90" cy="25" r="1" fill="#fff" opacity="0.4"/>
+            <circle cx="350" cy="50" r="1.5" fill="#fff" opacity="0.5"/>
+            <circle cx="370" cy="100" r="1" fill="#fff" opacity="0.3"/>
+            <circle cx="50" cy="120" r="1" fill="#fff" opacity="0.4"/>
+            <circle cx="310" cy="30" r="1.2" fill="#fff" opacity="0.5"/>
+
+            <!-- Obelisco silhouette in background -->
+            <rect x="60" y="250" width="8" height="200" fill="#1a2a4a" opacity="0.4"/>
+            <polygon points="60,250 68,250 64,230" fill="#1a2a4a" opacity="0.4"/>
+
+            <!-- Main building -->
+            <rect x="120" y="80" width="160" height="480" rx="4" fill="url(#bldg)" stroke="#75AADB" stroke-width="1.5" opacity="0.95"/>
+
+            <!-- Roof antenna -->
+            <rect x="196" y="40" width="8" height="45" fill="#75AADB"/>
+            <circle cx="200" cy="35" r="6" fill="#F5C518" filter="url(#glow)">
+                <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite"/>
+            </circle>
+
+            <!-- MCKOUTIE sign on top -->
+            <rect x="135" y="82" width="130" height="28" rx="3" fill="#0a0a0a" stroke="#F5C518" stroke-width="1"/>
+            <text x="200" y="101" text-anchor="middle" fill="#F5C518" font-family="monospace" font-size="14" font-weight="bold">MCKOUTIE</text>
+
+            <!-- Argentine flag bar under sign -->
+            <rect x="135" y="112" width="43" height="4" fill="#75AADB"/>
+            <rect x="178" y="112" width="44" height="4" fill="#ffffff"/>
+            <rect x="222" y="112" width="43" height="4" fill="#75AADB"/>
+
+            <!-- Floor 6 — Mate & Strategy -->
+            <rect x="135" y="125" width="55" height="60" rx="3" fill="#111a2f" stroke="#75AADB" stroke-width="0.8"/>
+            <rect x="210" y="125" width="55" height="60" rx="3" fill="#111a2f" stroke="#75AADB" stroke-width="0.8"/>
+            <!-- Capybara with mate -->
+            <circle cx="162" cy="148" r="12" fill="#8B6914"/>
+            <circle cx="157" cy="145" r="3" fill="#111"/>
+            <circle cx="167" cy="145" r="3" fill="#111"/>
+            <circle cx="157" cy="145" r="1.2" fill="#fff"/>
+            <circle cx="167" cy="145" r="1.2" fill="#fff"/>
+            <rect x="153" y="157" width="5" height="8" rx="2" fill="#2d5016"/>
+            <line x1="155" y1="157" x2="155" y2="150" stroke="#999" stroke-width="1"/>
+            <text x="162" y="178" text-anchor="middle" fill="#75AADB" font-family="monospace" font-size="6">ESTRATEGIA</text>
+            <!-- Capybara with chart -->
+            <circle cx="237" cy="148" r="12" fill="#8B6914"/>
+            <circle cx="232" cy="145" r="3" fill="#111"/>
+            <circle cx="242" cy="145" r="3" fill="#111"/>
+            <polyline points="222,170 230,165 238,168 246,158 254,162" fill="none" stroke="#00ff88" stroke-width="1.5"/>
+            <text x="237" y="178" text-anchor="middle" fill="#00ff88" font-family="monospace" font-size="6">TRACCION</text>
+
+            <!-- Floor 5 — Asado meeting -->
+            <rect x="135" y="195" width="55" height="60" rx="3" fill="#1a1008" stroke="#F5C518" stroke-width="0.8"/>
+            <rect x="210" y="195" width="55" height="60" rx="3" fill="#111a2f" stroke="#75AADB" stroke-width="0.8"/>
+            <!-- Grill/asado -->
+            <rect x="145" y="220" width="35" height="5" rx="1" fill="#444"/>
+            <line x1="150" y1="220" x2="150" y2="215" stroke="#ff6b35" stroke-width="2" opacity="0.8">
+                <animate attributeName="y2" values="215;212;215" dur="0.5s" repeatCount="indefinite"/>
+            </line>
+            <line x1="160" y1="220" x2="160" y2="213" stroke="#ff6b35" stroke-width="2" opacity="0.6">
+                <animate attributeName="y2" values="213;210;213" dur="0.7s" repeatCount="indefinite"/>
+            </line>
+            <line x1="170" y1="220" x2="170" y2="214" stroke="#ff6b35" stroke-width="2" opacity="0.7">
+                <animate attributeName="y2" values="214;211;214" dur="0.6s" repeatCount="indefinite"/>
+            </line>
+            <text x="162" y="247" text-anchor="middle" fill="#F5C518" font-family="monospace" font-size="6">ASADO</text>
+            <!-- Capybara coding -->
+            <circle cx="237" cy="218" r="12" fill="#8B6914"/>
+            <circle cx="232" cy="215" r="3" fill="#111"/>
+            <circle cx="242" cy="215" r="3" fill="#111"/>
+            <rect x="225" y="232" width="24" height="14" rx="2" fill="#0a0a0a" stroke="#75AADB" stroke-width="0.5"/>
+            <text x="237" y="241" text-anchor="middle" fill="#00ff88" font-family="monospace" font-size="5">&gt;_</text>
+            <text x="237" y="247" text-anchor="middle" fill="#75AADB" font-family="monospace" font-size="6">CODIGO</text>
+
+            <!-- Floor 4 — Tango & Growth -->
+            <rect x="135" y="265" width="55" height="60" rx="3" fill="#111a2f" stroke="#75AADB" stroke-width="0.8"/>
+            <rect x="210" y="265" width="55" height="60" rx="3" fill="#111a2f" stroke="#75AADB" stroke-width="0.8"/>
+            <!-- Two capybaras dancing tango -->
+            <circle cx="152" cy="288" r="10" fill="#8B6914"/>
+            <circle cx="172" cy="288" r="10" fill="#a07818"/>
+            <line x1="155" y1="298" x2="169" y2="298" stroke="#F5C518" stroke-width="1.5"/>
+            <text x="162" y="318" text-anchor="middle" fill="#F5C518" font-family="monospace" font-size="6">TANGO</text>
+            <!-- Growth rocket -->
+            <polygon points="237,275 243,295 231,295" fill="#75AADB"/>
+            <rect x="233" y="295" width="8" height="5" fill="#ff6b35"/>
+            <line x1="237" y1="300" x2="237" y2="310" stroke="#F5C518" stroke-width="2" opacity="0.6">
+                <animate attributeName="opacity" values="0.6;0.2;0.6" dur="0.4s" repeatCount="indefinite"/>
+            </line>
+            <text x="237" y="318" text-anchor="middle" fill="#ff6b35" font-family="monospace" font-size="6">GROWTH</text>
+
+            <!-- Floor 3 — Dulce de leche & Analysis -->
+            <rect x="135" y="335" width="55" height="60" rx="3" fill="#111a2f" stroke="#75AADB" stroke-width="0.8"/>
+            <rect x="210" y="335" width="55" height="60" rx="3" fill="#111a2f" stroke="#75AADB" stroke-width="0.8"/>
+            <!-- Alfajor -->
+            <ellipse cx="162" cy="358" rx="16" ry="7" fill="#8B4513"/>
+            <ellipse cx="162" cy="355" rx="16" ry="7" fill="#D2691E"/>
+            <ellipse cx="162" cy="356" rx="12" ry="3" fill="#F5C518"/>
+            <text x="162" y="385" text-anchor="middle" fill="#F5C518" font-family="monospace" font-size="6">ALFAJORES</text>
+            <!-- 19 channels icon -->
+            <text x="237" y="360" text-anchor="middle" fill="#75AADB" font-family="monospace" font-size="22" font-weight="bold">19</text>
+            <text x="237" y="375" text-anchor="middle" fill="#75AADB" font-family="monospace" font-size="6">CANALES</text>
+            <text x="237" y="385" text-anchor="middle" fill="#muted" font-family="monospace" font-size="5" fill="#666">de traccion</text>
+
+            <!-- Floor 2 — Peso & Dollar -->
+            <rect x="135" y="405" width="55" height="60" rx="3" fill="#111a2f" stroke="#75AADB" stroke-width="0.8"/>
+            <rect x="210" y="405" width="55" height="60" rx="3" fill="#1a1008" stroke="#F5C518" stroke-width="0.8"/>
+            <!-- Peso sign -->
+            <text x="162" y="440" text-anchor="middle" fill="#75AADB" font-family="monospace" font-size="28" font-weight="bold">$</text>
+            <text x="162" y="456" text-anchor="middle" fill="#666" font-family="monospace" font-size="6">ARS → USD</text>
+            <!-- Dollar bills flying -->
+            <text x="225" y="430" fill="#00ff88" font-family="monospace" font-size="10" transform="rotate(-15,225,430)">$39</text>
+            <text x="245" y="445" fill="#00ff88" font-family="monospace" font-size="8" transform="rotate(10,245,445)">/mo</text>
+            <text x="237" y="456" text-anchor="middle" fill="#F5C518" font-family="monospace" font-size="6">SIN CHAMUYO</text>
+
+            <!-- Floor 1 — Entrance with doorman capybara -->
+            <rect x="135" y="475" width="130" height="65" rx="3" fill="#0f1a2f" stroke="#75AADB" stroke-width="1"/>
+            <!-- Door -->
+            <rect x="180" y="495" width="40" height="45" rx="2" fill="#0a0a0a" stroke="#F5C518" stroke-width="1"/>
+            <circle cx="214" cy="518" r="2" fill="#F5C518"/>
+            <!-- Doorman capybara with suit -->
+            <circle cx="155" cy="505" r="12" fill="#8B6914"/>
+            <circle cx="150" cy="502" r="3" fill="#111"/>
+            <circle cx="160" cy="502" r="3" fill="#111"/>
+            <circle cx="150" cy="502" r="1.2" fill="#fff"/>
+            <circle cx="160" cy="502" r="1.2" fill="#fff"/>
+            <rect x="148" y="517" width="14" height="18" rx="2" fill="#1a1a3a"/>
+            <rect x="152" y="517" width="6" height="3" fill="#fff"/>
+            <!-- Welcome sign -->
+            <text x="200" y="490" text-anchor="middle" fill="#F5C518" font-family="monospace" font-size="7">BIENVENIDOS</text>
+
+            <!-- Ground / sidewalk -->
+            <rect x="100" y="540" width="200" height="6" fill="#222"/>
+
+            <!-- Floating elements -->
+            <!-- Mate flying -->
+            <g transform="translate(320,150)" opacity="0.7">
+                <rect x="0" y="5" width="12" height="15" rx="3" fill="#2d5016"/>
+                <line x1="6" y1="5" x2="6" y2="-5" stroke="#999" stroke-width="1.5"/>
+                <animateTransform attributeName="transform" type="translate" values="320,150;325,145;320,150" dur="3s" repeatCount="indefinite"/>
+            </g>
+            <!-- Dollar sign floating -->
+            <text x="90" y="180" fill="#F5C518" font-family="monospace" font-size="18" opacity="0.4">$</text>
+            <text x="330" y="300" fill="#F5C518" font-family="monospace" font-size="14" opacity="0.3">$</text>
+            <!-- Rocket -->
+            <g transform="translate(85,350)" opacity="0.5">
+                <polygon points="8,0 14,18 2,18" fill="#75AADB"/>
+                <rect x="4" y="18" width="8" height="4" fill="#ff6b35"/>
+                <animateTransform attributeName="transform" type="translate" values="85,350;82,340;85,350" dur="4s" repeatCount="indefinite"/>
+            </g>
+            <!-- Cloud -->
+            <g opacity="0.15">
+                <ellipse cx="330" cy="200" rx="25" ry="10" fill="#fff"/>
+                <ellipse cx="345" cy="195" rx="15" ry="8" fill="#fff"/>
+            </g>
+
+            <!-- "SEDE ARGENTINA" label at bottom -->
+            <rect x="130" y="555" width="140" height="22" rx="4" fill="#0a0a0a" stroke="#F5C518" stroke-width="1"/>
+            <text x="200" y="570" text-anchor="middle" fill="#F5C518" font-family="monospace" font-size="9" font-weight="bold">SEDE ARGENTINA</text>
+        </svg>
     </div>
     <div class="scroll-hint">↓ scrolleá para más</div>
 </div>
