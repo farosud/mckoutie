@@ -366,10 +366,60 @@ async def run_deep_analysis(report_id: str):
         update_status(report_id, "deep_analyzing")
         yield {"event": "thinking", "data": {"message": "Initializing deep analysis engine...", "detail": f"Preparing to analyze {startup_name}"}}
 
-        # --- Run full 19-channel analysis ---
+        # --- Run full 19-channel analysis with heartbeat ---
         yield {"event": "thinking", "data": {"message": "Analyzing 19 growth channels...", "detail": "Running full traction framework analysis via AI"}}
 
-        analysis = await run_traction_analysis(startup_data)
+        # Heartbeat messages while the LLM processes (60-90s wait)
+        _heartbeat_queue: asyncio.Queue = asyncio.Queue()
+        _heartbeat_done = asyncio.Event()
+
+        async def _heartbeat():
+            """Send progress messages during long LLM call so the UI stays alive."""
+            messages = [
+                ("Evaluating Viral Marketing potential...", "Assessing sharing mechanics, viral loops, and K-factor"),
+                ("Scoring PR & media angles...", "Analyzing newsworthiness and journalist appeal"),
+                ("Researching SEM & paid acquisition...", "Estimating keyword competition and CPC ranges"),
+                ("Analyzing SEO opportunity...", "Evaluating long-tail keyword potential and content gaps"),
+                ("Assessing content marketing fit...", "Mapping content pillars to audience pain points"),
+                ("Evaluating business development partners...", "Identifying ecosystem partnerships and integrations"),
+                ("Scoring community building potential...", "Analyzing community-market fit and engagement loops"),
+                ("Calculating budget allocation...", "Optimizing spend across top-scoring channels"),
+                ("Building 90-day action plan...", "Sequencing channel experiments by effort and impact"),
+                ("Generating hot take...", "Synthesizing the one insight that changes everything"),
+            ]
+            idx = 0
+            while not _heartbeat_done.is_set():
+                await asyncio.sleep(6)  # Every 6 seconds
+                if _heartbeat_done.is_set():
+                    break
+                if idx < len(messages):
+                    msg, detail = messages[idx]
+                    await _heartbeat_queue.put({"event": "thinking", "data": {"message": msg, "detail": detail}})
+                    idx += 1
+                else:
+                    elapsed = idx * 6
+                    await _heartbeat_queue.put({"event": "thinking", "data": {"message": f"Deep analysis in progress ({elapsed}s)...", "detail": "AI is generating detailed strategies for each channel"}})
+                    idx += 1
+
+        heartbeat_task = asyncio.create_task(_heartbeat())
+        analysis_task = asyncio.create_task(run_traction_analysis(startup_data))
+
+        # Drain heartbeat events while analysis runs
+        while not analysis_task.done():
+            try:
+                event = await asyncio.wait_for(_heartbeat_queue.get(), timeout=1.0)
+                yield event
+            except asyncio.TimeoutError:
+                continue
+
+        _heartbeat_done.set()
+        heartbeat_task.cancel()
+
+        # Drain remaining heartbeat events
+        while not _heartbeat_queue.empty():
+            yield await _heartbeat_queue.get()
+
+        analysis = analysis_task.result()
 
         if "error" in analysis and "raw_response" in analysis:
             yield {"event": "error", "data": {"message": f"Analysis failed: {analysis.get('error')}"}}
@@ -383,7 +433,7 @@ async def run_deep_analysis(report_id: str):
         channels = analysis.get("channel_analysis", [])
         sorted_channels = sorted(channels, key=lambda c: c.get("score", 0), reverse=True)
         for i, ch in enumerate(sorted_channels):
-            yield {"event": "thinking", "data": {"message": f"Analyzed: {ch.get('channel', 'Channel')}", "detail": f"Score: {ch.get('score', 0)}/10 — {ch.get('killer_insight', '')[:80]}"}}
+            yield {"event": "thinking", "data": {"message": f"Analyzed: {ch.get('channel', 'Channel')} ({i+1}/{len(sorted_channels)})", "detail": f"Score: {ch.get('score', 0)}/10 — {ch.get('killer_insight', '')[:80]}"}}
             yield {"event": "channel", "data": {"index": i, "channel": ch}}
             # Small delay for visual effect
             await asyncio.sleep(0.15)

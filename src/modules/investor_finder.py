@@ -68,7 +68,7 @@ async def find_investors(startup_data: str, analysis: dict, on_progress=None) ->
         f"| exa_key_starts={settings.exa_api_key[:8]}..."
     )
 
-    await _emit("thinking", {"message": "Discovering competitors in your space...", "detail": f"Searching for funded startups in {market or 'your market'}"})
+    await _emit("thinking", {"message": "Discovering competitors in your space...", "detail": f"Running 6 Exa searches for funded startups in {market or 'your market'}"})
 
     # Run both phases in parallel with independent error handling
     comp_task = _find_competitors(name, one_liner, market)

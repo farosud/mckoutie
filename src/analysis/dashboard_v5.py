@@ -97,6 +97,10 @@ def render_dashboard_v5(
         font-size:11px; color:#555; font-style:italic;
         height:16px; overflow:hidden; transition:all 0.3s;
     "></div>
+    <div id="activity-log" style="
+        margin-top:2px; padding-left:24px;
+        max-height:0; overflow:hidden; transition:max-height 0.4s ease;
+    "></div>
 </div>
 <style>
 @keyframes banner-glow {
@@ -1505,8 +1509,24 @@ def _streaming_js():
     else { pip.style.background='#333'; pip.style.animation='none'; }
   }
 
+  var activityLog = document.getElementById('activity-log');
+  var logEntries = [];
+  var MAX_LOG = 4;
+
   function setStatus(msg){ if(statusEl) statusEl.textContent = msg; }
-  function setThinking(msg){ if(thinkingEl) thinkingEl.textContent = msg || ''; }
+  function setThinking(msg){
+    if(thinkingEl) thinkingEl.textContent = msg || '';
+    if(msg && activityLog){
+      var ts = new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      logEntries.push({time:ts, msg:msg});
+      if(logEntries.length > MAX_LOG) logEntries.shift();
+      activityLog.innerHTML = logEntries.map(function(e){
+        return '<div style="font-size:10px;color:#444;font-family:var(--mono);padding:1px 0;opacity:0.7">'+
+          '<span style="color:#555">'+e.time+'</span> '+escHtml(e.msg)+'</div>';
+      }).join('');
+      activityLog.style.maxHeight = (logEntries.length * 18 + 4) + 'px';
+    }
+  }
 
   function escHtml(s){
     if(!s) return '';
@@ -1772,7 +1792,8 @@ def _streaming_js():
   function finishAnalysis(){
     pips.forEach(function(p){ p.style.background='#00ff88'; p.style.animation='none'; });
     setStatus('Analysis complete — your full report is ready.');
-    setThinking('');
+    if(thinkingEl) thinkingEl.textContent = '';
+    if(activityLog){ activityLog.style.maxHeight='0'; }
     setTimeout(function(){
       if(banner){
         banner.style.transition='all 0.5s ease';

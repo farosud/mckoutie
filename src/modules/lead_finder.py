@@ -64,11 +64,12 @@ async def find_leads(startup_data: str, analysis: dict, on_progress=None) -> dic
         f"| exa_key_starts={settings.exa_api_key[:8] if settings.exa_api_key else 'MISSING'}..."
     )
 
-    await _emit("thinking", {"message": "Generating customer personas...", "detail": f"Building 3 ideal customer profiles for {name or 'this startup'}"})
+    await _emit("thinking", {"message": "Generating customer personas...", "detail": f"Asking AI to build 3 ideal customer profiles for {name or 'this startup'}"})
 
     # Phase 1: Generate personas via LLM
     personas = []
     try:
+        await _emit("thinking", {"message": "Building customer personas via AI...", "detail": "Analyzing market, competitors, and user signals to identify ideal customers"})
         personas = await _generate_personas(startup_data, analysis)
         logger.info(f"[LEADS] Generated {len(personas)} personas")
     except Exception as e:
@@ -305,13 +306,15 @@ async def _find_leads_via_exa(
 
     logger.info(f"[LEADS] Launching {len(tasks)} Exa searches (max 3 concurrent)")
 
-    # Emit query start events
-    if on_lead_found:
-        for i, q in enumerate(task_queries):
-            persona_name = task_meta[i].get("name", "Customer")
+    # Run searches with per-query progress events
+    results_list = []
+    for i, task in enumerate(tasks):
+        persona_name = task_meta[i].get("name", "Customer")
+        query_text = task_queries[i]
+        if on_lead_found:
             await on_lead_found("thinking", {
-                "message": f"Searching for '{persona_name}' personas...",
-                "detail": f"Exa query: \"{q[:80]}\"",
+                "message": f"Searching for '{persona_name}' leads ({i+1}/{len(tasks)})...",
+                "detail": f"Exa query: \"{query_text[:80]}\"",
             })
 
     # Run all searches concurrently (semaphore limits actual concurrency)
