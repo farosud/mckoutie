@@ -821,7 +821,7 @@ async def run_quick_analysis(startup_data: str) -> dict:
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
                 model=settings.update_model,  # Haiku — fast + cheap
                 max_tokens=2000,
-                timeout_seconds=30.0,
+                timeout_seconds=90.0,
             )
         except RuntimeError as e:
             logger.warning(f"[QUICK] VPS proxy failed: {e}")
@@ -835,7 +835,7 @@ async def run_quick_analysis(startup_data: str) -> dict:
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
                 model=settings.update_model_fallback,
                 max_tokens=2000,
-                timeout_seconds=30.0,
+                timeout_seconds=90.0,
             )
         except RuntimeError as e:
             logger.warning(f"[QUICK] OpenRouter also failed: {e}")

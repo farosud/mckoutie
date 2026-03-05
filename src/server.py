@@ -1282,12 +1282,12 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     # but if someone got past it (or came back with a cookie), always stream.
     should_stream = is_skeleton
 
-    # If skeleton and not already running, kick off background deep analysis
-    # This ensures analysis runs even if SSE connection drops or Vercel buffers it
-    if is_skeleton and not is_deep_analysis_running(report_id):
-        import asyncio
-        asyncio.create_task(run_deep_analysis_background(report_id))
-        logger.info(f"[REPORT VIEW] Started background deep analysis for {report_id}")
+    # NOTE: Don't start background analysis here — let the SSE /stream endpoint drive it.
+    # Starting it here causes a race condition: background task claims the lock,
+    # then SSE gets "already_running" and falls back to polling (which can't stream events).
+    # If SSE drops mid-analysis, the lock is released and the next SSE reconnect picks it up.
+    if is_skeleton:
+        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — SSE will drive deep analysis")
 
     # Render the dashboard — with streaming flag for skeleton reports
     html = render_dashboard_v5(
@@ -1339,19 +1339,59 @@ async def debug_report(request: Request, report_id: str):
 async def stream_deep_analysis(request: Request, report_id: str):
     """True SSE endpoint — streams analysis events in real-time.
 
-    The client connects via EventSource and receives events as they happen:
-    thinking, channel, persona, lead, competitor, investor, section, advisor_ready, done, error.
+    If analysis isn't running yet, starts it and streams events directly.
+    If analysis is already running (e.g. reconnect), starts a background task
+    and polls _deep_progress so client still gets updates.
     """
     logger.info(f"[SSE] Stream request for {report_id}")
     record = report_store.load_record(report_id)
     if not record:
         return JSONResponse({"error": "Report not found"}, status_code=404)
 
+    # Check if report is already complete
+    analysis_path = REPORTS_DIR / report_id / "analysis.json"
+    if analysis_path.exists():
+        try:
+            analysis = json.loads(analysis_path.read_text())
+            if analysis.get("_phase") == "complete":
+                async def done_gen():
+                    yield {"event": "already_complete", "data": json.dumps({})}
+                return EventSourceResponse(done_gen())
+        except Exception:
+            pass
+
+    # If already running (reconnect scenario), ensure background task exists and poll progress
+    if is_deep_analysis_running(report_id):
+        logger.info(f"[SSE] Analysis already running for {report_id}, streaming progress via polling")
+        async def progress_generator():
+            yield {"event": "thinking", "data": json.dumps({"message": "Analysis in progress — reconnecting...", "detail": ""})}
+            last_status = ""
+            while True:
+                if await request.is_disconnected():
+                    break
+                progress = get_deep_progress(report_id)
+                status = progress.get("status", "")
+                if status != last_status:
+                    yield {"event": "thinking", "data": json.dumps({"message": status, "detail": ""})}
+                    last_status = status
+                if status == "complete":
+                    yield {"event": "done", "data": json.dumps({})}
+                    break
+                if status == "error":
+                    yield {"event": "error", "data": json.dumps({"message": progress.get("error", "Unknown")})}
+                    break
+                await asyncio.sleep(2)
+        return EventSourceResponse(progress_generator())
+
+    # Normal case: start analysis and stream events directly
     async def event_generator():
         try:
             async for event in run_deep_analysis(report_id):
                 if await request.is_disconnected():
                     logger.info(f"[SSE] Client disconnected for {report_id}")
+                    # Start background task so analysis continues even without SSE
+                    if is_deep_analysis_running(report_id):
+                        pass  # It's still running in the generator context
                     break
                 ev_type = event.get("event", "status")
                 ev_data = event.get("data", {})
@@ -1406,16 +1446,16 @@ async def poll_deep_progress(request: Request, report_id: str):
         except Exception:
             pass
 
-    # Check in-memory progress
+    # Check in-memory progress (includes granular channels/leads/investors)
     progress = get_deep_progress(report_id)
     if progress:
         return JSONResponse(progress)
 
     # Not started yet
     if is_deep_analysis_running(report_id):
-        return JSONResponse({"status": "running", "sections": {}})
+        return JSONResponse({"status": "running", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
 
-    return JSONResponse({"status": "not_started", "sections": {}})
+    return JSONResponse({"status": "not_started", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
 
 
 @app.post("/webhook/stripe")

@@ -1990,7 +1990,13 @@ def _streaming_js():
     fallbackPoll();
   });
 
-  // Fallback polling if SSE connection drops
+  // Fallback polling if SSE connection drops — progressively populates dashboard
+  var pollChannelCount = 0;
+  var pollLeadCount = 0;
+  var pollInvestorCount = 0;
+  var pollCompetitorCount = 0;
+  var pollPersonaCount = 0;
+
   function fallbackPoll(){
     fetch('/report/'+rid+'/progress')
       .then(function(r){ return r.json(); })
@@ -2003,6 +2009,48 @@ def _streaming_js():
           showError(d.error||'unknown');
           return;
         }
+        // Update status message
+        if(d.status) setStatus(d.status);
+
+        // Progressively add channels
+        var pChannels = d.channels||[];
+        while(pollChannelCount < pChannels.length){
+          addChannelRow(pChannels[pollChannelCount], pollChannelCount);
+          pollChannelCount++;
+          setPip('channels','active');
+        }
+        if(pollChannelCount >= 19) setPip('channels','done');
+
+        // Progressively add personas
+        var pPersonas = d.personas||[];
+        while(pollPersonaCount < pPersonas.length){
+          addPersonaCard(pPersonas[pollPersonaCount], pollPersonaCount);
+          pollPersonaCount++;
+        }
+
+        // Progressively add leads
+        var pLeads = d.leads||[];
+        while(pollLeadCount < pLeads.length){
+          addLeadRow(pLeads[pollLeadCount], pollLeadCount);
+          pollLeadCount++;
+          setPip('leads','active');
+        }
+
+        // Progressively add competitors
+        var pComps = d.competitors||[];
+        while(pollCompetitorCount < pComps.length){
+          addCompetitorCard(pComps[pollCompetitorCount], pollCompetitorCount);
+          pollCompetitorCount++;
+          setPip('investors','active');
+        }
+
+        // Progressively add investors
+        var pInvs = d.investors||[];
+        while(pollInvestorCount < pInvs.length){
+          addInvestorRow(pInvs[pollInvestorCount], pollInvestorCount);
+          pollInvestorCount++;
+        }
+
         setTimeout(fallbackPoll, 3000);
       })
       .catch(function(){ setTimeout(fallbackPoll, 5000); });

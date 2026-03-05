@@ -644,15 +644,36 @@ async def run_deep_analysis_background(report_id: str):
     Run deep analysis as a background task (no SSE).
     Updates _deep_progress dict so clients can poll for status.
     """
-    _deep_progress[report_id] = {"status": "starting", "sections": {}}
+    _deep_progress[report_id] = {"status": "starting", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []}
 
     try:
         async for event in run_deep_analysis(report_id):
             ev_type = event.get("event", "")
             ev_data = event.get("data", {})
 
-            if ev_type == "status":
+            if ev_type == "thinking":
                 _deep_progress[report_id]["status"] = ev_data.get("message", "working")
+            elif ev_type == "channel":
+                ch = ev_data.get("channel", {})
+                if ch:
+                    _deep_progress[report_id]["channels"].append(ch)
+                _deep_progress[report_id]["status"] = f"Analyzing channels ({len(_deep_progress[report_id]['channels'])}/19)"
+            elif ev_type == "persona":
+                p = ev_data.get("persona", {})
+                if p:
+                    _deep_progress[report_id]["personas"].append(p)
+            elif ev_type == "lead":
+                l = ev_data.get("lead", {})
+                if l:
+                    _deep_progress[report_id]["leads"].append(l)
+            elif ev_type == "competitor":
+                c = ev_data.get("competitor", {})
+                if c:
+                    _deep_progress[report_id]["competitors"].append(c)
+            elif ev_type == "investor":
+                inv = ev_data.get("investor", {})
+                if inv:
+                    _deep_progress[report_id]["investors"].append(inv)
             elif ev_type == "section":
                 section = ev_data.get("section", "")
                 payload = ev_data.get("payload", {})
