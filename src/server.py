@@ -1330,6 +1330,69 @@ async def stripe_webhook(request: Request):
     return JSONResponse({"status": "ok"})
 
 
+# --- Advisor Chat API (proxies to VPS advisor service) ---
+
+@app.post("/advisor/chat")
+async def advisor_chat(request: Request):
+    """Proxy chat messages to the VPS advisor service."""
+    import httpx
+
+    session_cookie = request.cookies.get("mckoutie_session")
+    user = auth.get_session_user(session_cookie)
+    if not user:
+        return JSONResponse({"error": "Not logged in"}, status_code=401)
+
+    body = await request.json()
+    agent_id = body.get("agent_id", "")
+    message = body.get("message", "")
+    deep = body.get("deep", False)
+
+    if not agent_id or not message:
+        return JSONResponse({"error": "Missing agent_id or message"}, status_code=400)
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{settings.advisor_url}/chat",
+                json={"agent_id": agent_id, "message": message, "deep": deep},
+                headers={"X-Advisor-Key": settings.advisor_api_key},
+            )
+            resp.raise_for_status()
+            return JSONResponse(resp.json())
+    except httpx.TimeoutException:
+        return JSONResponse({"error": "Advisor took too long to respond"}, status_code=504)
+    except Exception as e:
+        logger.error(f"Advisor chat error: {e}")
+        return JSONResponse({"error": "Advisor unavailable"}, status_code=502)
+
+
+@app.get("/advisor/history/{agent_id}")
+async def advisor_history(request: Request, agent_id: str):
+    """Get conversation history for an agent."""
+    import httpx
+
+    session_cookie = request.cookies.get("mckoutie_session")
+    user = auth.get_session_user(session_cookie)
+    if not user:
+        return JSONResponse({"error": "Not logged in"}, status_code=401)
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{settings.advisor_url}/agent/{agent_id}",
+                headers={"X-Advisor-Key": settings.advisor_api_key},
+            )
+            if resp.status_code == 404:
+                return JSONResponse({"exists": False, "message_count": 0})
+            resp.raise_for_status()
+            data = resp.json()
+            data["exists"] = True
+            return JSONResponse(data)
+    except Exception as e:
+        logger.error(f"Advisor history error: {e}")
+        return JSONResponse({"exists": False, "error": str(e)}, status_code=502)
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "mckoutie", "version": "0.1.0"}
