@@ -600,6 +600,8 @@ async def auth_twitter_callback(request: Request, code: str = "", state: str = "
         httponly=True,
         secure=True,
         samesite="lax",
+        domain=".mckoutie.com",
+        path="/",
     )
     return response
 
@@ -1276,14 +1278,18 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
 
     # Determine if this is a skeleton report that needs deep analysis
     is_skeleton = analysis.get("_phase") == "skeleton" or record.status == "skeleton"
-    needs_deep = is_skeleton and logged_in and not is_deep_analysis_running(report_id)
-    # Also stream if deep analysis is already running (another tab triggered it)
-    should_stream = is_skeleton and logged_in
+    # Enable streaming for ANY skeleton report — login is checked by the overlay,
+    # but if someone got past it (or came back with a cookie), always stream.
+    should_stream = is_skeleton
 
-    # Deep analysis is triggered by the SSE connection from the client JS.
-    # No background task needed — the EventSource connection drives it.
+    # If skeleton and not already running, kick off background deep analysis
+    # This ensures analysis runs even if SSE connection drops or Vercel buffers it
+    if is_skeleton and not is_deep_analysis_running(report_id):
+        import asyncio
+        asyncio.create_task(run_deep_analysis_background(report_id))
+        logger.info(f"[REPORT VIEW] Started background deep analysis for {report_id}")
 
-    # Render the dashboard — with streaming flag only when logged in + skeleton
+    # Render the dashboard — with streaming flag for skeleton reports
     html = render_dashboard_v5(
         analysis=analysis,
         startup_name=record.startup_name,
