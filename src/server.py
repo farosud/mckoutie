@@ -1462,129 +1462,144 @@ async def advisor_history(request: Request, agent_id: str):
         return JSONResponse({"exists": False, "error": str(e)}, status_code=502)
 
 
-@app.post("/analyze", response_class=HTMLResponse)
-async def analyze_from_web(request: Request):
-    """Accept a website URL from the landing page form.
-
-    Creates a skeleton report and redirects to Twitter login,
-    which then redirects to the report page where deep analysis starts.
-    """
-    from src.analysis.report_generator import generate_report_id, save_report
-    from src.modules.report_store import ReportRecord, save_record
-    import re as _re
-
-    form = await request.form()
-    raw_url = str(form.get("url", "")).strip()
-
-    if not raw_url:
-        return RedirectResponse("/", status_code=303)
-
-    # Normalize URL
-    if not raw_url.startswith(("http://", "https://")):
-        raw_url = "https://" + raw_url
-
-    # Basic validation
-    if not _re.match(r"https?://[a-zA-Z0-9]", raw_url):
-        return RedirectResponse("/", status_code=303)
-
-    report_id = generate_report_id(raw_url)
-
-    # Check if we already have a report for this URL (within 24h)
-    existing = report_store.load_record(report_id)
-    if existing:
-        login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
-        return RedirectResponse(login_url, status_code=303)
-
-    # Create a minimal skeleton — deep analysis runs on page visit after login
-    record = ReportRecord(
-        report_id=report_id,
-        startup_name=raw_url,
-        target=raw_url,
-        tweet_id="",
-        author_username="web",
-        author_id="web",
-        status="skeleton",
-    )
-    save_record(record)
-
-    # Sync to Supabase
+async def _handle_analyze(request: Request):
+    """Accept a website URL from the landing page form."""
+    logger.info(f"[ANALYZE] Received {request.method} request")
     try:
-        db.create_report(
+        from src.analysis.report_generator import generate_report_id, save_report
+        from src.modules.report_store import ReportRecord, save_record
+        import re as _re
+
+        if request.method == "POST":
+            form = await request.form()
+            raw_url = str(form.get("url", "")).strip()
+        else:
+            raw_url = request.query_params.get("url", "").strip()
+        logger.info(f"[ANALYZE] URL: {raw_url}")
+
+        if not raw_url:
+            return RedirectResponse("/", status_code=303)
+
+        # Normalize URL
+        if not raw_url.startswith(("http://", "https://")):
+            raw_url = "https://" + raw_url
+
+        # Basic validation
+        if not _re.match(r"https?://[a-zA-Z0-9]", raw_url):
+            return RedirectResponse("/", status_code=303)
+
+        report_id = generate_report_id(raw_url)
+
+        # Check if we already have a report for this URL (within 24h)
+        existing = report_store.load_record(report_id)
+        if existing:
+            login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
+            return RedirectResponse(login_url, status_code=303)
+
+        # Create a minimal skeleton — deep analysis runs on page visit after login
+        record = ReportRecord(
             report_id=report_id,
             startup_name=raw_url,
             target=raw_url,
             tweet_id="",
-            author_twitter_id="web",
             author_username="web",
+            author_id="web",
+            status="skeleton",
         )
-    except Exception as e:
-        logger.warning(f"Supabase report create failed (non-fatal): {e}")
+        save_record(record)
 
-    # Scrape + quick analysis in background, save skeleton
-    try:
-        from src.modules.scraper import scrape_website
-        from src.analysis.traction_engine import run_quick_analysis
+        # Sync to Supabase
+        try:
+            db.create_report(
+                report_id=report_id,
+                startup_name=raw_url,
+                target=raw_url,
+                tweet_id="",
+                author_twitter_id="web",
+                author_username="web",
+            )
+        except Exception as e:
+            logger.warning(f"Supabase report create failed (non-fatal): {e}")
 
-        site_data = await scrape_website(raw_url)
-        startup_data = ""
-        if site_data.get("content") and len(site_data["content"]) > 50:
-            parts = [f"## WEBSITE DATA\nURL: {site_data['url']}"]
-            if site_data.get("title"):
-                parts.append(f"Title: {site_data['title']}")
-            if site_data.get("description"):
-                parts.append(f"Description: {site_data['description']}")
-            parts.append(f"\nContent:\n{site_data['content'][:8000]}")
-            startup_data = "\n".join(parts)
+        # Scrape + quick analysis in background, save skeleton
+        try:
+            from src.modules.scraper import scrape_website
+            from src.analysis.traction_engine import run_quick_analysis
 
-        if startup_data:
-            quick = await run_quick_analysis(startup_data)
-            profile = quick.get("company_profile", {})
-            startup_name = profile.get("name", raw_url)
+            site_data = await scrape_website(raw_url)
+            startup_data = ""
+            if site_data.get("content") and len(site_data["content"]) > 50:
+                parts = [f"## WEBSITE DATA\nURL: {site_data['url']}"]
+                if site_data.get("title"):
+                    parts.append(f"Title: {site_data['title']}")
+                if site_data.get("description"):
+                    parts.append(f"Description: {site_data['description']}")
+                parts.append(f"\nContent:\n{site_data['content'][:8000]}")
+                startup_data = "\n".join(parts)
 
-            skeleton_data = {
-                "company_profile": profile,
-                "top_3_channels": quick.get("top_3_channels", []),
-                "hot_take": quick.get("hot_take", ""),
-                "channel_analysis": [],
-                "bullseye_ranking": {},
-                "ninety_day_plan": {},
-                "budget_allocation": {},
-                "risk_matrix": [],
-                "competitive_moat": "",
-                "executive_summary": "",
-                "leads_research": {},
-                "investor_research": {},
-                "_startup_data": startup_data,
-                "_phase": "skeleton",
-            }
-            save_report(report_id, skeleton_data, "")
-            from src.modules.report_store import update_status
-            update_status(report_id, "skeleton", startup_name=startup_name)
-        else:
-            # Even without data, save empty skeleton so page renders
-            skeleton_data = {
-                "company_profile": {"name": raw_url},
-                "top_3_channels": [],
-                "hot_take": "",
-                "channel_analysis": [],
-                "bullseye_ranking": {},
-                "ninety_day_plan": {},
-                "budget_allocation": {},
-                "risk_matrix": [],
-                "competitive_moat": "",
-                "executive_summary": "",
-                "leads_research": {},
-                "investor_research": {},
-                "_startup_data": f"## WEBSITE DATA\nURL: {raw_url}\n(scraping failed or returned no content)",
-                "_phase": "skeleton",
-            }
-            save_report(report_id, skeleton_data, "")
-    except Exception as e:
-        logger.warning(f"Quick analysis from web failed (non-fatal): {e}")
+            if startup_data:
+                quick = await run_quick_analysis(startup_data)
+                profile = quick.get("company_profile", {})
+                startup_name = profile.get("name", raw_url)
 
-    # Redirect to Twitter login → then to report page
-    login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
-    return RedirectResponse(login_url, status_code=303)
+                skeleton_data = {
+                    "company_profile": profile,
+                    "top_3_channels": quick.get("top_3_channels", []),
+                    "hot_take": quick.get("hot_take", ""),
+                    "channel_analysis": [],
+                    "bullseye_ranking": {},
+                    "ninety_day_plan": {},
+                    "budget_allocation": {},
+                    "risk_matrix": [],
+                    "competitive_moat": "",
+                    "executive_summary": "",
+                    "leads_research": {},
+                    "investor_research": {},
+                    "_startup_data": startup_data,
+                    "_phase": "skeleton",
+                }
+                save_report(report_id, skeleton_data, "")
+                from src.modules.report_store import update_status
+                update_status(report_id, "skeleton", startup_name=startup_name)
+            else:
+                skeleton_data = {
+                    "company_profile": {"name": raw_url},
+                    "top_3_channels": [],
+                    "hot_take": "",
+                    "channel_analysis": [],
+                    "bullseye_ranking": {},
+                    "ninety_day_plan": {},
+                    "budget_allocation": {},
+                    "risk_matrix": [],
+                    "competitive_moat": "",
+                    "executive_summary": "",
+                    "leads_research": {},
+                    "investor_research": {},
+                    "_startup_data": f"## WEBSITE DATA\nURL: {raw_url}\n(scraping failed or returned no content)",
+                    "_phase": "skeleton",
+                }
+                save_report(report_id, skeleton_data, "")
+        except Exception as e:
+            logger.warning(f"Quick analysis from web failed (non-fatal): {e}")
+
+        # Redirect to Twitter login → then to report page
+        login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
+        logger.info(f"[ANALYZE] Redirecting to {login_url}")
+        return RedirectResponse(login_url, status_code=303)
+
+    except Exception as exc:
+        logger.error(f"[ANALYZE] Unhandled error: {exc}", exc_info=True)
+        return HTMLResponse(f"<h1>Error processing request</h1><pre>{exc}</pre>", status_code=500)
+
+
+@app.post("/analyze", response_class=HTMLResponse)
+async def analyze_post(request: Request):
+    return await _handle_analyze(request)
+
+
+@app.get("/analyze", response_class=HTMLResponse)
+async def analyze_get(request: Request):
+    return await _handle_analyze(request)
 
 
 @app.get("/health")
