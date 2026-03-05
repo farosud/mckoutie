@@ -374,6 +374,38 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
   .hdr-id,.hdr-time{display:none}
 }
 
+/* ── Channel Accordion ── */
+.ch-row{cursor:pointer;transition:background .08s}
+.ch-row:hover{background:var(--surface)}
+.ch-row td:first-child::before{content:'';display:inline-block;width:0;height:0;border:4px solid transparent;border-left:5px solid var(--text3);margin-right:6px;transition:transform .2s;vertical-align:middle}
+.ch-row.open td:first-child::before{transform:rotate(90deg)}
+.ch-expand{display:none;background:var(--surface)}
+.ch-expand.open{display:table-row}
+.ch-expand-inner{padding:20px 24px}
+.ch-actions-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:20px}
+.ch-action-card{
+  background:var(--panel);border:1px solid var(--border2);border-radius:var(--radius);
+  padding:16px;border-top:2px solid var(--accent);
+}
+.ch-action-num{font-size:10px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+.ch-action-title{font-size:13px;font-weight:600;color:var(--white);margin-bottom:8px;line-height:1.3}
+.ch-action-desc{font-size:11px;color:var(--text2);line-height:1.5;margin-bottom:10px}
+.ch-action-result{font-size:10px;color:var(--green);font-weight:500;padding:6px 10px;background:var(--green-soft);border-radius:var(--radius)}
+.ch-research-title{font-size:11px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+.ch-research-table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:0}
+.ch-research-table th{
+  padding:8px 12px;text-align:left;font-weight:600;color:var(--text3);
+  font-size:10px;text-transform:uppercase;letter-spacing:.5px;
+  border-bottom:1px solid var(--border2);background:var(--surface2);
+}
+.ch-research-table td{
+  padding:8px 12px;border-bottom:1px solid var(--border);color:var(--text);
+}
+.ch-research-table tbody tr:last-child td{border-bottom:none}
+.ch-research-table tbody tr:hover{background:var(--surface2)}
+.ch-research-wrap{background:var(--panel);border:1px solid var(--border2);border-radius:var(--radius);overflow:hidden}
+@media(max-width:1024px){.ch-actions-grid{grid-template-columns:1fr}}
+
 /* ── Download button ── */
 .dl-btn{
   display:flex;align-items:center;gap:6px;width:calc(100% - 24px);margin:0 12px;
@@ -534,6 +566,7 @@ def _section_channels(channels, tier):
         score = ch.get("score", 0)
         color = "var(--green)" if score >= 8 else "var(--amber)" if score >= 6 else "var(--text3)"
         pct = score * 10
+        ch_id = f"ch-{i}"
 
         insight = ch.get("killer_insight", "")
         first_move = ch.get("first_move", "")
@@ -544,7 +577,7 @@ def _section_channels(channels, tier):
             move_html = '<span style="color:var(--text3);font-size:10px">Starter plan</span>'
 
         rows += f"""
-<tr>
+<tr class="ch-row" data-target="{ch_id}" onclick="toggleChannel('{ch_id}')">
   <td class="cell-rank">{i+1}</td>
   <td class="cell-name">{_e(ch.get("channel",""))}</td>
   <td>
@@ -560,12 +593,21 @@ def _section_channels(channels, tier):
   <td>{move_html}</td>
 </tr>"""
 
+        # Expandable accordion row
+        deep = ch.get("deep_dive", {})
+        expand_content = _render_channel_accordion(ch, deep, tier)
+        rows += f"""
+<tr class="ch-expand" id="{ch_id}">
+  <td colspan="8">{expand_content}</td>
+</tr>"""
+
     return f"""
 <div class="section" id="channels">
   <div class="section-header">
     <div class="section-title">Channel Analysis</div>
     <div class="update-badge"><span class="dot"></span> Updated today</div>
   </div>
+  <div style="font-size:11px;color:var(--text3);margin-bottom:10px">Click any channel to expand actions and research</div>
   <div class="data-table-wrap">
     <table class="data-table">
       <thead><tr>
@@ -573,6 +615,239 @@ def _section_channels(channels, tier):
         <th>Effort</th><th>Timeline</th><th>Budget</th>
         <th>Key Insight</th><th>First Move</th>
       </tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>
+</div>"""
+
+
+def _render_channel_accordion(ch, deep, tier):
+    """Render expandable accordion content for a channel."""
+    actions = deep.get("actions", [])
+    research = deep.get("research", [])
+    research_type = deep.get("research_type", "general")
+
+    if not actions and not research:
+        ideas = ch.get("specific_ideas", [])
+        why = ch.get("why_or_why_not", "")
+        if not ideas and not why:
+            return '<div class="ch-expand-inner" style="color:var(--text3);font-size:12px">Detailed analysis available in future updates.</div>'
+        ideas_html = ""
+        for j, idea in enumerate(ideas[:3]):
+            ideas_html += f"""
+<div class="ch-action-card">
+  <div class="ch-action-num">Idea {j+1}</div>
+  <div class="ch-action-title">{_e(idea)}</div>
+</div>"""
+        why_html = f'<div style="margin-top:12px;font-size:12px;color:var(--text2);line-height:1.6"><strong style="color:var(--white)">Why:</strong> {_e(why)}</div>' if why else ""
+        return f'<div class="ch-expand-inner"><div class="ch-actions-grid">{ideas_html}</div>{why_html}</div>'
+
+    # Action cards
+    actions_html = ""
+    for j, action in enumerate(actions[:3]):
+        result = action.get("expected_result", "")
+        result_html = f'<div class="ch-action-result">{_e(result)}</div>' if result else ""
+        actions_html += f"""
+<div class="ch-action-card">
+  <div class="ch-action-num">Action {j+1}</div>
+  <div class="ch-action-title">{_e(action.get("title",""))}</div>
+  <div class="ch-action-desc">{_e(action.get("description","")[:300])}</div>
+  {result_html}
+</div>"""
+
+    # Research table
+    research_html = _render_research_table(research, research_type) if research else ""
+
+    return f"""<div class="ch-expand-inner">
+  <div class="ch-actions-grid">{actions_html}</div>
+  {research_html}
+</div>"""
+
+
+def _render_research_table(research, research_type):
+    """Render research data table, adapting columns to the research type."""
+
+    if research_type == "conferences":
+        headers = "<th>Event</th><th>Date</th><th>Location</th><th>Cost</th><th>Audience</th><th>Fit</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--amber);white-space:nowrap">{_e(r.get('date',''))}</td>
+<td class="cell-muted">{_e(r.get('location',''))}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--text2)">{_e(r.get('cost',''))}</td>
+<td class="cell-muted">{_e(r.get('audience',''))}</td>
+<td class="cell-desc">{_e(r.get('fit','')[:120])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "keywords":
+        headers = "<th>Keyword</th><th>Volume</th><th>CPC</th><th>Competition</th><th>Strategy</th>"
+        rows = ""
+        for r in research:
+            comp = r.get("competition", "")
+            cc = "var(--green)" if comp == "Low" else "var(--amber)" if comp == "Medium" else "var(--red)"
+            rows += f"""<tr>
+<td class="cell-name">{_e(r.get('keyword',''))}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--cyan)">{_e(r.get('volume',''))}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--green)">{_e(r.get('cpc',''))}</td>
+<td><span class="cell-tag" style="background:{cc}20;color:{cc}">{_e(comp)}</span></td>
+<td class="cell-desc">{_e(r.get('strategy','')[:120])}</td>
+</tr>"""
+
+    elif research_type == "content_topics":
+        headers = "<th>Topic</th><th>Volume</th><th>Difficulty</th><th>Format</th><th>Angle</th>"
+        rows = ""
+        for r in research:
+            diff = r.get("difficulty", "")
+            dc = "var(--green)" if diff == "Low" else "var(--amber)" if diff == "Medium" else "var(--red)"
+            rows += f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--cyan)">{_e(r.get('volume',''))}</td>
+<td><span class="cell-tag" style="background:{dc}20;color:{dc}">{_e(diff)}</span></td>
+<td class="cell-muted">{_e(r.get('format',''))}</td>
+<td class="cell-desc">{_e(r.get('angle','')[:120])}</td>
+</tr>"""
+
+    elif research_type == "communities":
+        headers = "<th>Community</th><th>Members</th><th>Relevance</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name"><a href="{_e(r.get('url','#'))}" target="_blank">{_e(r.get('name',''))}</a></td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--cyan)">{_e(r.get('members',''))}</td>
+<td class="cell-desc">{_e(r.get('relevance','')[:180])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "partners":
+        headers = "<th>Partner</th><th>Type</th><th>Audience</th><th>Strategic Fit</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td><span class="cell-tag tag-market">{_e(r.get('type',''))}</span></td>
+<td class="cell-muted">{_e(r.get('audience',''))}</td>
+<td class="cell-desc">{_e(r.get('fit','')[:180])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "sales_targets":
+        headers = "<th>Company</th><th>Target Role</th><th>Why</th><th>Approach</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td class="cell-muted">{_e(r.get('title',''))}</td>
+<td class="cell-desc">{_e(r.get('reason','')[:140])}</td>
+<td class="cell-desc">{_e(r.get('approach','')[:120])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "outreach":
+        headers = "<th>Template</th><th>Subject Line</th><th>Preview</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td style="color:var(--white);font-size:12px">{_e(r.get('subject',''))}</td>
+<td class="cell-desc">{_e(r.get('preview','')[:180])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "platforms":
+        headers = "<th>Platform</th><th>Type</th><th>Audience</th><th>Strategy</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td><span class="cell-tag tag-market">{_e(r.get('type',''))}</span></td>
+<td class="cell-muted">{_e(r.get('audience',''))}</td>
+<td class="cell-desc">{_e(r.get('strategy','')[:160])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "community_platforms":
+        headers = "<th>Platform</th><th>Cost</th><th>Pros</th><th>Cons</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--green)">{_e(r.get('cost',''))}</td>
+<td class="cell-desc">{_e(r.get('pros','')[:140])}</td>
+<td class="cell-desc" style="color:var(--amber)">{_e(r.get('cons','')[:140])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "journalists":
+        headers = "<th>Journalist</th><th>Outlet</th><th>Beat</th><th>Recent Article</th><th>Twitter</th><th>Relevance</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name"><a href="https://twitter.com/{_e((r.get('twitter','')or'').lstrip('@'))}" target="_blank">{_e(r.get('name',''))}</a></td>
+<td style="color:var(--white);font-size:12px">{_e(r.get('outlet',''))}</td>
+<td class="cell-muted">{_e(r.get('beat',''))}</td>
+<td class="cell-desc" style="max-width:200px">{_e(r.get('recent_article','')[:120])}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--accent)">{_e(r.get('twitter',''))}</td>
+<td class="cell-desc">{_e(r.get('relevance','')[:140])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "influencers":
+        headers = "<th>Influencer</th><th>Platform</th><th>Audience</th><th>Engagement</th><th>Why Relevant</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name"><a href="{_e(r.get('url','#'))}" target="_blank">{_e(r.get('name',''))}</a></td>
+<td><span class="cell-tag {_tag_class(r.get('platform',''))}">{_e(r.get('platform',''))}</span></td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--cyan)">{_e(r.get('audience',''))}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--green)">{_e(r.get('engagement',''))}</td>
+<td class="cell-desc">{_e(r.get('relevance','')[:140])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "newsletters":
+        headers = "<th>Publication</th><th>Audience</th><th>Frequency</th><th>Contact</th><th>Pitch Angle</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name"><a href="{_e(r.get('url','#'))}" target="_blank">{_e(r.get('name',''))}</a></td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--cyan)">{_e(r.get('audience',''))}</td>
+<td class="cell-muted">{_e(r.get('frequency',''))}</td>
+<td class="cell-muted">{_e(r.get('contact',''))}</td>
+<td class="cell-desc">{_e(r.get('angle','')[:140])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "email_sequences":
+        headers = "<th>Email</th><th>Subject</th><th>Timing</th><th>Goal</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td style="color:var(--white);font-size:12px">{_e(r.get('subject',''))}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--amber)">{_e(r.get('timing',''))}</td>
+<td class="cell-desc">{_e(r.get('goal','')[:140])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "free_tools":
+        headers = "<th>Tool Idea</th><th>Effort</th><th>Viral Potential</th><th>Conversion Path</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td><span class="cell-tag" style="background:var(--amber-soft);color:var(--amber)">{_e(r.get('effort',''))}</span></td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--green)">{_e(r.get('viral_potential',''))}</td>
+<td class="cell-desc">{_e(r.get('conversion','')[:160])}</td>
+</tr>""" for r in research)
+
+    elif research_type == "stunts":
+        headers = "<th>Stunt Idea</th><th>Budget</th><th>Virality</th><th>Risk</th><th>Description</th>"
+        rows = ""
+        for r in research:
+            risk = r.get("risk", "")
+            rc = "var(--green)" if risk == "Low" else "var(--amber)" if risk == "Medium" else "var(--red)"
+            rows += f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--text2)">{_e(r.get('budget',''))}</td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--green)">{_e(r.get('virality',''))}</td>
+<td><span class="cell-tag" style="background:{rc}20;color:{rc}">{_e(risk)}</span></td>
+<td class="cell-desc">{_e(r.get('description','')[:160])}</td>
+</tr>"""
+
+    elif research_type == "affiliates":
+        headers = "<th>Affiliate</th><th>Platform</th><th>Audience</th><th>Type</th><th>Commission Model</th>"
+        rows = "".join(f"""<tr>
+<td class="cell-name"><a href="{_e(r.get('url','#'))}" target="_blank">{_e(r.get('name',''))}</a></td>
+<td><span class="cell-tag {_tag_class(r.get('platform',''))}">{_e(r.get('platform',''))}</span></td>
+<td style="font-family:var(--mono);font-size:11px;color:var(--cyan)">{_e(r.get('audience',''))}</td>
+<td class="cell-muted">{_e(r.get('type',''))}</td>
+<td class="cell-desc">{_e(r.get('commission','')[:120])}</td>
+</tr>""" for r in research)
+
+    else:
+        # Generic fallback
+        headers = "<th>Item</th><th>Details</th>"
+        rows = ""
+        for r in research:
+            details = " | ".join(f"{k}: {v}" for k, v in r.items() if k not in ("name", "url") and v)
+            rows += f"""<tr>
+<td class="cell-name">{_e(r.get('name',''))}</td>
+<td class="cell-desc">{_e(details[:300])}</td>
+</tr>"""
+
+    return f"""
+<div style="margin-top:4px">
+  <div class="ch-research-title">Research & Data</div>
+  <div class="ch-research-wrap">
+    <table class="ch-research-table">
+      <thead><tr>{headers}</tr></thead>
       <tbody>{rows}</tbody>
     </table>
   </div>
@@ -840,6 +1115,15 @@ def _section_footer(name):
 # ═══════════════════════════════════════════════
 def _js():
     return """
+// Channel accordion toggle
+function toggleChannel(id){
+  var row=document.getElementById(id);
+  var trigger=document.querySelector('[data-target="'+id+'"]');
+  if(!row||!trigger)return;
+  row.classList.toggle('open');
+  trigger.classList.toggle('open');
+}
+
 // Download as .md
 function downloadMd(){
   var d=__REPORT_DATA__;
