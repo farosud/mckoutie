@@ -1027,7 +1027,7 @@ def _mock_analysis() -> dict:
 async def test_report(request: Request, tier: str = "free"):
     """Test report with mock data for iterating on layout. Supports ?tier=free|starter|growth"""
     mock = _mock_analysis()
-    html = render_dashboard(
+    html = render_dashboard_v5(
         analysis=mock,
         startup_name="Linear",
         report_id="test-mock-001",
@@ -1119,7 +1119,7 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
             ) or "#"
 
     # Render dashboard with appropriate tier
-    html = render_dashboard(
+    html = render_dashboard_v5(
         analysis=analysis,
         startup_name=record.startup_name,
         report_id=report_id,
