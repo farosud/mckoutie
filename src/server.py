@@ -34,7 +34,9 @@ from src.analysis.dashboard_v4 import render_dashboard_v4
 from src.analysis.dashboard_v5 import render_dashboard_v5
 from src.orchestrator import run_deep_analysis, is_deep_analysis_running
 
-REPORTS_DIR = Path(__file__).parent.parent / "reports"
+# Use Railway persistent volume if available, else local
+_data_dir = Path("/data")
+REPORTS_DIR = _data_dir / "reports" if _data_dir.is_dir() else Path(__file__).parent.parent / "reports"
 
 logger = logging.getLogger(__name__)
 
@@ -1141,6 +1143,15 @@ def _mock_analysis() -> dict:
 @app.get("/testreport", response_class=HTMLResponse)
 async def test_report(request: Request, tier: str = "free", gate: str = ""):
     """Test report with mock data. ?tier=free|starter|growth  ?gate=login to preview login overlay"""
+    # Check real session cookie — behave like a real report page
+    session_cookie = request.cookies.get("mckoutie_session")
+    user = auth.get_session_user(session_cookie)
+    is_logged_in = user is not None
+    # Override with ?gate param for testing
+    if gate == "login":
+        is_logged_in = False
+    elif gate == "skip":
+        is_logged_in = True
     mock = _mock_analysis()
     html = render_dashboard_v5(
         analysis=mock,
@@ -1149,7 +1160,7 @@ async def test_report(request: Request, tier: str = "free", gate: str = ""):
         tier=tier,
         checkout_url="#pricing",
         upgrade_url="#pricing",
-        logged_in=(gate != "login"),
+        logged_in=is_logged_in,
         login_url="/auth/twitter?redirect=/testreport",
     )
     return HTMLResponse(content=html)
@@ -1158,6 +1169,15 @@ async def test_report(request: Request, tier: str = "free", gate: str = ""):
 @app.get("/test2", response_class=HTMLResponse)
 async def test_report_v5(request: Request, tier: str = "free", gate: str = ""):
     """V5 dashboard — formal BI style. ?tier=free|starter|growth  ?gate=login to preview login overlay"""
+    # Check real session cookie — behave like a real report page
+    session_cookie = request.cookies.get("mckoutie_session")
+    user = auth.get_session_user(session_cookie)
+    is_logged_in = user is not None
+    # Override with ?gate param for testing
+    if gate == "login":
+        is_logged_in = False
+    elif gate == "skip":
+        is_logged_in = True
     mock = _mock_analysis()
     html = render_dashboard_v5(
         analysis=mock,
@@ -1166,7 +1186,7 @@ async def test_report_v5(request: Request, tier: str = "free", gate: str = ""):
         tier=tier,
         checkout_url="#pricing",
         upgrade_url="#pricing",
-        logged_in=(gate != "login"),
+        logged_in=is_logged_in,
         login_url="/auth/twitter?redirect=/test2",
     )
     return HTMLResponse(content=html)
@@ -1440,6 +1460,131 @@ async def advisor_history(request: Request, agent_id: str):
     except Exception as e:
         logger.error(f"Advisor history error: {e}")
         return JSONResponse({"exists": False, "error": str(e)}, status_code=502)
+
+
+@app.post("/analyze", response_class=HTMLResponse)
+async def analyze_from_web(request: Request):
+    """Accept a website URL from the landing page form.
+
+    Creates a skeleton report and redirects to Twitter login,
+    which then redirects to the report page where deep analysis starts.
+    """
+    from src.analysis.report_generator import generate_report_id, save_report
+    from src.modules.report_store import ReportRecord, save_record
+    import re as _re
+
+    form = await request.form()
+    raw_url = str(form.get("url", "")).strip()
+
+    if not raw_url:
+        return RedirectResponse("/", status_code=303)
+
+    # Normalize URL
+    if not raw_url.startswith(("http://", "https://")):
+        raw_url = "https://" + raw_url
+
+    # Basic validation
+    if not _re.match(r"https?://[a-zA-Z0-9]", raw_url):
+        return RedirectResponse("/", status_code=303)
+
+    report_id = generate_report_id(raw_url)
+
+    # Check if we already have a report for this URL (within 24h)
+    existing = report_store.load_record(report_id)
+    if existing:
+        login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
+        return RedirectResponse(login_url, status_code=303)
+
+    # Create a minimal skeleton — deep analysis runs on page visit after login
+    record = ReportRecord(
+        report_id=report_id,
+        startup_name=raw_url,
+        target=raw_url,
+        tweet_id="",
+        author_username="web",
+        author_id="web",
+        status="skeleton",
+    )
+    save_record(record)
+
+    # Sync to Supabase
+    try:
+        db.create_report(
+            report_id=report_id,
+            startup_name=raw_url,
+            target=raw_url,
+            tweet_id="",
+            author_twitter_id="web",
+            author_username="web",
+        )
+    except Exception as e:
+        logger.warning(f"Supabase report create failed (non-fatal): {e}")
+
+    # Scrape + quick analysis in background, save skeleton
+    try:
+        from src.modules.scraper import scrape_website
+        from src.analysis.traction_engine import run_quick_analysis
+
+        site_data = await scrape_website(raw_url)
+        startup_data = ""
+        if site_data.get("content") and len(site_data["content"]) > 50:
+            parts = [f"## WEBSITE DATA\nURL: {site_data['url']}"]
+            if site_data.get("title"):
+                parts.append(f"Title: {site_data['title']}")
+            if site_data.get("description"):
+                parts.append(f"Description: {site_data['description']}")
+            parts.append(f"\nContent:\n{site_data['content'][:8000]}")
+            startup_data = "\n".join(parts)
+
+        if startup_data:
+            quick = await run_quick_analysis(startup_data)
+            profile = quick.get("company_profile", {})
+            startup_name = profile.get("name", raw_url)
+
+            skeleton_data = {
+                "company_profile": profile,
+                "top_3_channels": quick.get("top_3_channels", []),
+                "hot_take": quick.get("hot_take", ""),
+                "channel_analysis": [],
+                "bullseye_ranking": {},
+                "ninety_day_plan": {},
+                "budget_allocation": {},
+                "risk_matrix": [],
+                "competitive_moat": "",
+                "executive_summary": "",
+                "leads_research": {},
+                "investor_research": {},
+                "_startup_data": startup_data,
+                "_phase": "skeleton",
+            }
+            save_report(report_id, skeleton_data, "")
+            from src.modules.report_store import update_status
+            update_status(report_id, "skeleton", startup_name=startup_name)
+        else:
+            # Even without data, save empty skeleton so page renders
+            skeleton_data = {
+                "company_profile": {"name": raw_url},
+                "top_3_channels": [],
+                "hot_take": "",
+                "channel_analysis": [],
+                "bullseye_ranking": {},
+                "ninety_day_plan": {},
+                "budget_allocation": {},
+                "risk_matrix": [],
+                "competitive_moat": "",
+                "executive_summary": "",
+                "leads_research": {},
+                "investor_research": {},
+                "_startup_data": f"## WEBSITE DATA\nURL: {raw_url}\n(scraping failed or returned no content)",
+                "_phase": "skeleton",
+            }
+            save_report(report_id, skeleton_data, "")
+    except Exception as e:
+        logger.warning(f"Quick analysis from web failed (non-fatal): {e}")
+
+    # Redirect to Twitter login → then to report page
+    login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
+    return RedirectResponse(login_url, status_code=303)
 
 
 @app.get("/health")
