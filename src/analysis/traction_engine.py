@@ -736,20 +736,8 @@ async def _generate_deep_dives(startup_data: str, analysis: dict, channels_batch
 
     text = None
 
-    # PRIMARY: OpenRouter Sonnet (fast, VPS routes to Opus which is too slow)
-    if settings.openrouter_api_key:
-        try:
-            text = await _call_openrouter(
-                prompt,
-                system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model_fallback,
-                max_tokens=8000,
-                timeout_seconds=120.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"OpenRouter failed for deep dives: {e}")
-
-    if text is None and settings.has_vps_proxy:
+    # PRIMARY: VPS proxy Sonnet (free, model IDs fixed)
+    if settings.has_vps_proxy:
         try:
             text = await _call_vps_proxy(
                 prompt,
@@ -760,6 +748,19 @@ async def _generate_deep_dives(startup_data: str, analysis: dict, channels_batch
             )
         except RuntimeError as e:
             logger.warning(f"VPS proxy failed for deep dives: {e}")
+
+    # FALLBACK: OpenRouter Sonnet
+    if text is None and settings.openrouter_api_key:
+        try:
+            text = await _call_openrouter(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model_fallback,
+                max_tokens=8000,
+                timeout_seconds=120.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter failed for deep dives: {e}")
 
     if text is None:
         return {}
@@ -863,26 +864,15 @@ async def run_quick_analysis(startup_data: str) -> dict:
 async def run_core_analysis(startup_data: str) -> dict:
     """Phase A: Get company profile + 19 channel scores (no deep_dive). Fast ~30-60s.
 
-    Uses OpenRouter Sonnet as PRIMARY because VPS proxy routes all models to Opus
-    which is too slow for the large 19-channel prompt (causes 540s timeouts).
+    Uses VPS proxy Sonnet as PRIMARY (free, model IDs fixed to match proxy).
+    Falls back to OpenRouter Sonnet if VPS is down.
     """
     prompt = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
     text = None
 
-    # PRIMARY: OpenRouter Sonnet (fast, ~30-60s for 19 channels)
-    if settings.openrouter_api_key:
-        logger.info("[PHASE A] Running core analysis via OpenRouter (Sonnet)...")
-        try:
-            text = await _call_openrouter(
-                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model_fallback, max_tokens=16000, timeout_seconds=180.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"OpenRouter failed for Phase A: {e}")
-
-    # FALLBACK: VPS proxy (will use Opus, slower but free)
-    if text is None and settings.has_vps_proxy:
-        logger.info("[PHASE A] Falling back to VPS proxy...")
+    # PRIMARY: VPS proxy Sonnet (free, fast ~30-60s)
+    if settings.has_vps_proxy:
+        logger.info("[PHASE A] Running core analysis via VPS proxy (Sonnet)...")
         try:
             text = await _call_vps_proxy(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
@@ -890,6 +880,17 @@ async def run_core_analysis(startup_data: str) -> dict:
             )
         except RuntimeError as e:
             logger.warning(f"VPS proxy failed for Phase A: {e}")
+
+    # FALLBACK: OpenRouter Sonnet
+    if text is None and settings.openrouter_api_key:
+        logger.info("[PHASE A] Falling back to OpenRouter (Sonnet)...")
+        try:
+            text = await _call_openrouter(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model_fallback, max_tokens=16000, timeout_seconds=180.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter failed for Phase A: {e}")
 
     # LAST RESORT: Anthropic direct
     if text is None and settings.anthropic_api_key:
@@ -930,25 +931,12 @@ async def run_traction_analysis(startup_data: str) -> dict:
     Fallback chain: VPS proxy → Anthropic direct → OpenRouter.
     """
     # --- Phase A: Core analysis (scores + summaries, no deep_dive) ---
-    # OpenRouter Sonnet first (VPS routes to Opus which is too slow for big prompts)
+    # VPS proxy Sonnet first (free, model IDs fixed to match proxy)
     prompt_a = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
     text = None
 
-    if settings.openrouter_api_key:
-        logger.info("[PHASE A] Running core traction analysis via OpenRouter (Sonnet)...")
-        try:
-            text = await _call_openrouter(
-                prompt_a,
-                system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model_fallback,
-                max_tokens=16000,
-                timeout_seconds=180.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"OpenRouter failed for Phase A: {e}")
-
-    if text is None and settings.has_vps_proxy:
-        logger.info("[PHASE A] Falling back to VPS proxy (Opus)...")
+    if settings.has_vps_proxy:
+        logger.info("[PHASE A] Running core traction analysis via VPS proxy (Sonnet)...")
         try:
             text = await _call_vps_proxy(
                 prompt_a,
@@ -959,6 +947,19 @@ async def run_traction_analysis(startup_data: str) -> dict:
             )
         except RuntimeError as e:
             logger.warning(f"VPS proxy failed for Phase A: {e}")
+
+    if text is None and settings.openrouter_api_key:
+        logger.info("[PHASE A] Falling back to OpenRouter (Sonnet)...")
+        try:
+            text = await _call_openrouter(
+                prompt_a,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model_fallback,
+                max_tokens=16000,
+                timeout_seconds=180.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter failed for Phase A: {e}")
 
     if text is None and settings.anthropic_api_key:
         logger.info("[PHASE A] Falling back to Anthropic direct (Sonnet)...")

@@ -51,13 +51,13 @@ class Settings(BaseSettings):
     enterprise_email: str = "emi@mckoutie.com"
     poll_interval_seconds: int = 60
     # Tiered model allocation — Sonnet for bulk analysis, Opus for synthesis, Haiku for updates
-    analysis_model: str = "claude-sonnet-4-20250514"  # Sonnet on VPS — main 19-channel analysis (fast, reliable)
+    analysis_model: str = "claude-sonnet-4"  # Sonnet on VPS — main 19-channel analysis (fast, reliable)
     analysis_model_fallback: str = "anthropic/claude-sonnet-4"  # Sonnet on OpenRouter fallback
-    hot_take_model: str = "claude-opus-4-20250918"  # Opus on VPS — hot take synthesis only (short, high-value)
+    hot_take_model: str = "claude-opus-4"  # Opus on VPS — hot take synthesis only (short, high-value)
     hot_take_model_fallback: str = "anthropic/claude-opus-4"  # Opus on OpenRouter fallback
-    persona_model: str = "claude-sonnet-4-20250514"  # Sonnet on VPS — persona/lead/investor generation
+    persona_model: str = "claude-sonnet-4"  # Sonnet on VPS — persona/lead/investor generation
     persona_model_fallback: str = "anthropic/claude-sonnet-4"  # Sonnet on OpenRouter fallback
-    update_model: str = "claude-haiku-4-5-20251001"  # Haiku on VPS — market updates (delta analysis)
+    update_model: str = "claude-haiku-4"  # Haiku on VPS — market updates (delta analysis)
     update_model_fallback: str = "anthropic/claude-haiku-4-5"  # Haiku on OpenRouter fallback
     analysis_max_tokens: int = 32000
     hot_take_max_tokens: int = 2000  # Opus hot take is short — keep it fast
