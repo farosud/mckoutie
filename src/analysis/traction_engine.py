@@ -60,7 +60,14 @@ local channels, language, market size, and distribution differences.
 
 IMPORTANT: Your analysis should feel like $10K worth of consulting,
 not a generic blog post. Be SPECIFIC to THIS startup — reference their
-actual product, market, and situation throughout."""
+actual product, market, and situation throughout.
+
+CRITICAL INSTRUCTIONS:
+- You MUST respond ONLY with valid JSON. No markdown, no commentary, no preamble.
+- Do NOT ask for tools, permissions, web access, or any other capabilities.
+- Do NOT say you need to fetch, browse, or search anything.
+- Work ONLY with the startup data provided in the user message.
+- Your response must start with { and end with }."""
 
 ANALYSIS_PROMPT = """Analyze this startup and produce a full traction strategy report.
 
@@ -686,26 +693,38 @@ async def run_traction_analysis(startup_data: str) -> dict:
     prompt = ANALYSIS_PROMPT.format(startup_data=startup_data)
     text = None
 
-    # --- Phase 1: Main analysis via Sonnet (fast, reliable) ---
-    # NOTE: VPS proxy always routes to Opus regardless of model requested
-    # (it's a Claude CLI wrapper). Opus is too slow for 32K-token structured analysis.
-    # So we use OpenRouter Sonnet first (fast, ~60-90s), then VPS as fallback.
+    # --- Phase 1: Main analysis via Sonnet ---
+    # Priority: VPS (free, 10min timeout) → OpenRouter (paid fallback) → Anthropic direct
 
-    # Try OpenRouter Sonnet first (fast, reliable for large structured output)
+    # Try VPS proxy first (free on Max plan, 10 min timeout)
+    if settings.has_vps_proxy:
+        logger.info("[PHASE 1] Running traction analysis via VPS proxy (Sonnet)...")
+        try:
+            text = await _call_vps_proxy(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model,
+                max_tokens=settings.analysis_max_tokens,
+                timeout_seconds=540.0,  # 9 min client timeout (VPS has 10 min server timeout)
+            )
+        except RuntimeError as e:
+            logger.warning(f"VPS proxy failed: {e}")
+
+    # Fallback: OpenRouter Sonnet
     if text is None and settings.openrouter_api_key:
-        logger.info("[PHASE 1] Running traction analysis via OpenRouter (Sonnet)...")
+        logger.info("[PHASE 1] Falling back to OpenRouter (Sonnet)...")
         try:
             text = await _call_openrouter(
                 prompt,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
                 model=settings.analysis_model_fallback,
                 max_tokens=settings.analysis_max_tokens,
-                timeout_seconds=240.0,
+                timeout_seconds=300.0,
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter failed: {e}")
 
-    # Try Anthropic direct
+    # Last resort: Anthropic direct
     if text is None and settings.anthropic_api_key:
         logger.info("[PHASE 1] Falling back to Anthropic direct (Sonnet)...")
         try:
@@ -716,21 +735,7 @@ async def run_traction_analysis(startup_data: str) -> dict:
                 max_tokens=settings.analysis_max_tokens,
             )
         except RuntimeError as e:
-            logger.warning(f"Anthropic failed: {e}")
-
-    # Fall back to VPS proxy (will use Opus — slower but works)
-    if text is None and settings.has_vps_proxy:
-        logger.info("[PHASE 1] Falling back to VPS proxy (Opus via Max plan)...")
-        try:
-            text = await _call_vps_proxy(
-                prompt,
-                system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model,
-                max_tokens=settings.analysis_max_tokens,
-                timeout_seconds=600.0,  # 10 min — Opus is slow for large output
-            )
-        except RuntimeError as e:
-            logger.error(f"VPS proxy also failed: {e}")
+            logger.error(f"Anthropic also failed: {e}")
             return {"error": f"All LLM providers failed: {e}"}
 
     if text is None:
