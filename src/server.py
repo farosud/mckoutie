@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.config import settings
 from src.modules import auth, payments, report_store
+from src.country_pages import COUNTRIES, render_country_page
 from src.analysis.report_generator import generate_report_html
 from src.analysis.dashboard_renderer import render_dashboard
 from src.analysis.dashboard_v3 import render_dashboard_v3
@@ -721,13 +722,23 @@ async def landing_ar():
 <footer>
     <p>mckoutie — McKinsey at home</p>
     <p style="margin-top: 0.5rem;">
-        <a href="/">English</a> · <a href="/AR">Argentina</a> · <a href="https://x.com/mckoutie" target="_blank">Twitter</a>
+        <a href="/">English</a> · <strong>Argentina</strong> · <a href="/BR">Brazil</a> · <a href="/CA">Canada</a> · <a href="/CL">Chile</a> · <a href="/CO">Colombia</a> · <a href="/DE">Germany</a> · <a href="/ES">Spain</a> · <a href="/FR">France</a> · <a href="/IE">Ireland</a> · <a href="/IL">Israel</a> · <a href="/IT">Italy</a> · <a href="/MX">Mexico</a> · <a href="/NL">Netherlands</a> · <a href="/PE">Peru</a> · <a href="/PL">Poland</a> · <a href="/PT">Portugal</a> · <a href="/SE">Sweden</a> · <a href="/UK">UK</a> · <a href="/UY">Uruguay</a> · <a href="https://x.com/mckoutie" target="_blank">Twitter</a>
     </p>
     <p style="margin-top: 1rem;">No afiliado con McKinsey (obviamente). Hecho con asado y mate.</p>
 </footer>
 
 </body>
 </html>"""
+
+
+# --- Dynamic country landing pages ---
+for _code in COUNTRIES:
+    def _make_handler(code: str):
+        async def handler():
+            return HTMLResponse(render_country_page(code))
+        handler.__name__ = f"landing_{code.lower()}"
+        return handler
+    app.get(f"/{_code}", response_class=HTMLResponse)(_make_handler(_code))
 
 
 @app.get("/auth/twitter")
@@ -1304,8 +1315,8 @@ def _mock_analysis() -> dict:
 
 
 @app.get("/testreport", response_class=HTMLResponse)
-async def test_report(request: Request, tier: str = "free"):
-    """Test report with mock data for iterating on layout. Supports ?tier=free|starter|growth"""
+async def test_report(request: Request, tier: str = "free", gate: str = ""):
+    """Test report with mock data. ?tier=free|starter|growth  ?gate=login to preview login overlay"""
     mock = _mock_analysis()
     html = render_dashboard_v5(
         analysis=mock,
@@ -1314,13 +1325,15 @@ async def test_report(request: Request, tier: str = "free"):
         tier=tier,
         checkout_url="#pricing",
         upgrade_url="#pricing",
+        logged_in=(gate != "login"),
+        login_url="/auth/twitter?redirect=/testreport",
     )
     return HTMLResponse(content=html)
 
 
 @app.get("/test2", response_class=HTMLResponse)
-async def test_report_v5(request: Request, tier: str = "free"):
-    """V5 dashboard — formal BI style, single scroll, spreadsheet tables. Supports ?tier=free|starter|growth"""
+async def test_report_v5(request: Request, tier: str = "free", gate: str = ""):
+    """V5 dashboard — formal BI style. ?tier=free|starter|growth  ?gate=login to preview login overlay"""
     mock = _mock_analysis()
     html = render_dashboard_v5(
         analysis=mock,
@@ -1329,6 +1342,8 @@ async def test_report_v5(request: Request, tier: str = "free"):
         tier=tier,
         checkout_url="#pricing",
         upgrade_url="#pricing",
+        logged_in=(gate != "login"),
+        login_url="/auth/twitter?redirect=/test2",
     )
     return HTMLResponse(content=html)
 
@@ -1362,43 +1377,35 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         except Exception:
             pass
 
-    # Determine tier based on subscription status + login
+    # Check login status first — ALL visitors must register with Twitter
+    session_cookie = request.cookies.get("mckoutie_session")
+    user = auth.get_session_user(session_cookie)
+    logged_in = user is not None
+    login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
+
+    # Determine tier based on subscription status + ownership
     tier = "free"
     checkout_url = record.checkout_url or "#"
     upgrade_url = "#"
 
-    if record.status in ("active", "paid"):
-        # Get logged-in user from session cookie
-        session_cookie = request.cookies.get("mckoutie_session")
-        user = auth.get_session_user(session_cookie)
-
-        if not user:
-            # Not logged in — show login prompt
-            login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
-            return HTMLResponse(content=_login_page(record, login_url))
-
-        # Check if this user owns the report (requester or subscriber)
+    if logged_in and record.status in ("active", "paid"):
         user_twitter_id = user.get("twitter_id", "")
         is_owner = (
             user_twitter_id == record.author_id
             or user_twitter_id == record.subscriber_twitter_id
         )
 
-        if not is_owner:
-            return HTMLResponse(content=_not_your_report_page(record, user))
+        if is_owner:
+            tier = record.tier or "starter"
 
-        # Authorized — determine tier from record
-        tier = record.tier or "starter"
+            if tier == "starter" and settings.has_payments:
+                upgrade_url = payments.create_upgrade_session(
+                    report_id=report_id,
+                    startup_name=record.startup_name,
+                    customer_id=record.customer_id,
+                ) or "#"
 
-        # Generate upgrade URL for starter users
-        if tier == "starter" and settings.has_payments:
-            upgrade_url = payments.create_upgrade_session(
-                report_id=report_id,
-                startup_name=record.startup_name,
-                customer_id=record.customer_id,
-            ) or "#"
-
-    # Render dashboard with appropriate tier
+    # Always render the dashboard — overlay login gate if not authenticated
     html = render_dashboard_v5(
         analysis=analysis,
         startup_name=record.startup_name,
@@ -1406,6 +1413,8 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         tier=tier,
         checkout_url=checkout_url,
         upgrade_url=upgrade_url,
+        logged_in=logged_in,
+        login_url=login_url,
     )
     return HTMLResponse(content=html)
 

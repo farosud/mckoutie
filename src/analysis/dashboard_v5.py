@@ -22,6 +22,8 @@ def render_dashboard_v5(
     tier: str = "free",
     checkout_url: str = "#",
     upgrade_url: str = "#",
+    logged_in: bool = True,
+    login_url: str = "",
 ) -> str:
     profile = analysis.get("company_profile", {})
     channels = analysis.get("channel_analysis", [])
@@ -62,9 +64,11 @@ def render_dashboard_v5(
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>{_css()}</style>
+{_login_overlay_css() if not logged_in else ""}
 </head>
-<body>
+<body{' class="login-gated"' if not logged_in else ''}>
 
+{_login_overlay(startup_name, login_url) if not logged_in else ""}
 {_header(startup_name, now_str, tier, report_id)}
 
 <div class="shell">
@@ -91,6 +95,95 @@ var __REPORT_DATA__={_report_json(analysis, startup_name, report_id, tier)};
 
 def _e(t):
     return escape(str(t)) if t else ""
+
+
+def _login_overlay_css():
+    return """<style>
+body.login-gated .shell, body.login-gated > header {
+    filter: blur(6px);
+    pointer-events: none;
+    user-select: none;
+}
+.login-overlay {
+    position: fixed; inset: 0; z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(11,13,16,.7);
+    backdrop-filter: blur(2px);
+}
+.login-box {
+    background: var(--panel, #111318);
+    border: 1px solid var(--border2, #2a2f3d);
+    border-radius: 16px;
+    padding: 48px 40px 40px;
+    max-width: 440px; width: 90%;
+    text-align: center;
+    box-shadow: 0 24px 80px rgba(0,0,0,.6);
+    animation: loginSlide .4s ease-out;
+}
+@keyframes loginSlide {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.login-box .logo {
+    font-family: 'EB Garamond', 'Georgia', serif;
+    font-size: 1.6rem; font-weight: 600;
+    color: var(--white, #eaedf3);
+    letter-spacing: .02em;
+    margin-bottom: 4px;
+}
+.login-box .logo span { color: var(--cyan, #17c3b2); font-style: italic; }
+.login-box .subtitle {
+    font-family: 'Inter', sans-serif;
+    font-size: .75rem; text-transform: uppercase;
+    letter-spacing: .12em; color: var(--text3, #4e5568);
+    margin-bottom: 28px;
+}
+.login-box .brief-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.1rem; font-weight: 600;
+    color: var(--accent, #4f8af7);
+    margin-bottom: 8px;
+}
+.login-box .brief-desc {
+    font-family: 'Inter', sans-serif;
+    font-size: .88rem; color: var(--text2, #7d849a);
+    line-height: 1.5; margin-bottom: 32px;
+}
+.login-box .twitter-btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    background: #1d9bf0; color: #fff;
+    font-family: 'Inter', sans-serif;
+    font-size: .95rem; font-weight: 600;
+    padding: 14px 36px;
+    border: none; border-radius: 8px;
+    text-decoration: none; cursor: pointer;
+    transition: background .15s, transform .1s;
+}
+.login-box .twitter-btn:hover { background: #0c85d0; transform: translateY(-1px); }
+.login-box .twitter-btn svg { width: 20px; height: 20px; fill: currentColor; }
+.login-box .fine-print {
+    margin-top: 20px;
+    font-family: 'Inter', sans-serif;
+    font-size: .72rem; color: var(--text3, #4e5568);
+    line-height: 1.4;
+}
+</style>"""
+
+
+def _login_overlay(startup_name: str, login_url: str):
+    return f"""<div class="login-overlay">
+  <div class="login-box">
+    <div class="logo">mckoutie <span>&amp;</span> company</div>
+    <div class="subtitle">strategy intelligence</div>
+    <div class="brief-name">Strategy Brief: {_e(startup_name)}</div>
+    <div class="brief-desc">Your full traction analysis is ready.<br>Sign in with X to view your report.</div>
+    <a class="twitter-btn" href="{_e(login_url)}">
+      <svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+      Sign in with X
+    </a>
+    <div class="fine-print">We only verify your identity. We don't post or read your DMs.<br>Your data stays private.</div>
+  </div>
+</div>"""
 
 
 # ═══════════════════════════════════════════════
