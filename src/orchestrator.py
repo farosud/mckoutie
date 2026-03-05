@@ -38,7 +38,7 @@ from src.modules.report_store import ReportRecord, save_record, update_status, l
 from src.modules.image_generator import generate_capybara_image
 from src.modules.lead_finder import find_leads
 from src.modules.investor_finder import find_investors
-from src.analysis.traction_engine import run_quick_analysis, run_traction_analysis
+from src.analysis.traction_engine import run_quick_analysis, run_traction_analysis, run_core_analysis, run_deep_dives_batch
 from src.analysis.report_generator import (
     generate_report_id,
     generate_teaser_from_quick,
@@ -366,100 +366,110 @@ async def run_deep_analysis(report_id: str):
         update_status(report_id, "deep_analyzing")
         yield {"event": "thinking", "data": {"message": "Initializing deep analysis engine...", "detail": f"Preparing to analyze {startup_name}"}}
 
-        # --- Run full 19-channel analysis with heartbeat ---
-        yield {"event": "thinking", "data": {"message": "Analyzing 19 growth channels...", "detail": "Running full traction framework analysis via AI"}}
+        # ==========================================================
+        # PHASE A: Core 19-channel analysis (scores, no deep_dive)
+        # ==========================================================
+        yield {"event": "thinking", "data": {"message": "Scoring 19 growth channels...", "detail": "Phase 1: evaluating channel fit for your startup"}}
 
-        # Heartbeat messages while the LLM processes (60-90s wait)
-        _heartbeat_queue: asyncio.Queue = asyncio.Queue()
-        _heartbeat_done = asyncio.Event()
+        # Run core analysis with heartbeat
+        _hb_queue: asyncio.Queue = asyncio.Queue()
+        _hb_done = asyncio.Event()
 
         async def _heartbeat():
-            """Send progress messages during long LLM call so the UI stays alive."""
-            messages = [
-                ("Evaluating Viral Marketing potential...", "Assessing sharing mechanics, viral loops, and K-factor"),
-                ("Scoring PR & media angles...", "Analyzing newsworthiness and journalist appeal"),
-                ("Researching SEM & paid acquisition...", "Estimating keyword competition and CPC ranges"),
-                ("Analyzing SEO opportunity...", "Evaluating long-tail keyword potential and content gaps"),
-                ("Assessing content marketing fit...", "Mapping content pillars to audience pain points"),
-                ("Evaluating business development partners...", "Identifying ecosystem partnerships and integrations"),
-                ("Scoring community building potential...", "Analyzing community-market fit and engagement loops"),
-                ("Calculating budget allocation...", "Optimizing spend across top-scoring channels"),
-                ("Building 90-day action plan...", "Sequencing channel experiments by effort and impact"),
-                ("Generating hot take...", "Synthesizing the one insight that changes everything"),
+            msgs = [
+                "Evaluating Viral Marketing...", "Scoring PR angles...",
+                "Researching SEM keywords...", "Analyzing SEO potential...",
+                "Assessing content fit...", "Mapping partnerships...",
+                "Scoring community building...", "Calculating budgets...",
             ]
             idx = 0
-            while not _heartbeat_done.is_set():
-                await asyncio.sleep(6)  # Every 6 seconds
-                if _heartbeat_done.is_set():
+            while not _hb_done.is_set():
+                await asyncio.sleep(5)
+                if _hb_done.is_set():
                     break
-                if idx < len(messages):
-                    msg, detail = messages[idx]
-                    await _heartbeat_queue.put({"event": "thinking", "data": {"message": msg, "detail": detail}})
-                    idx += 1
-                else:
-                    elapsed = idx * 6
-                    await _heartbeat_queue.put({"event": "thinking", "data": {"message": f"Deep analysis in progress ({elapsed}s)...", "detail": "AI is generating detailed strategies for each channel"}})
-                    idx += 1
+                msg = msgs[idx % len(msgs)] if idx < len(msgs) else f"Scoring channels ({idx * 5}s)..."
+                await _hb_queue.put({"event": "thinking", "data": {"message": msg, "detail": ""}})
+                idx += 1
 
-        heartbeat_task = asyncio.create_task(_heartbeat())
-        analysis_task = asyncio.create_task(run_traction_analysis(startup_data))
+        hb_task = asyncio.create_task(_heartbeat())
+        core_task = asyncio.create_task(run_core_analysis(startup_data))
 
-        # Drain heartbeat events while analysis runs
-        while not analysis_task.done():
+        while not core_task.done():
             try:
-                event = await asyncio.wait_for(_heartbeat_queue.get(), timeout=1.0)
+                event = await asyncio.wait_for(_hb_queue.get(), timeout=1.0)
                 yield event
             except asyncio.TimeoutError:
                 continue
 
-        _heartbeat_done.set()
-        heartbeat_task.cancel()
+        _hb_done.set()
+        hb_task.cancel()
+        while not _hb_queue.empty():
+            yield await _hb_queue.get()
 
-        # Drain remaining heartbeat events
-        while not _heartbeat_queue.empty():
-            yield await _heartbeat_queue.get()
-
-        analysis = analysis_task.result()
+        analysis = core_task.result()
 
         if "error" in analysis and "raw_response" in analysis:
             yield {"event": "error", "data": {"message": f"Analysis failed: {analysis.get('error')}"}}
             return
 
-        # Merge quick profile data if full analysis is missing some fields
         if not analysis.get("company_profile"):
             analysis["company_profile"] = skeleton.get("company_profile", {})
 
-        # Stream channels one by one
+        # Stream channels immediately (scores + ideas, no deep_dive yet)
         channels = analysis.get("channel_analysis", [])
         sorted_channels = sorted(channels, key=lambda c: c.get("score", 0), reverse=True)
         for i, ch in enumerate(sorted_channels):
-            yield {"event": "thinking", "data": {"message": f"Analyzed: {ch.get('channel', 'Channel')} ({i+1}/{len(sorted_channels)})", "detail": f"Score: {ch.get('score', 0)}/10 — {ch.get('killer_insight', '')[:80]}"}}
+            yield {"event": "thinking", "data": {"message": f"Channel {i+1}/{len(sorted_channels)}: {ch.get('channel', '')} — {ch.get('score', 0)}/10", "detail": ch.get('killer_insight', '')[:80]}}
             yield {"event": "channel", "data": {"index": i, "channel": ch}}
-            # Small delay for visual effect
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.1)
 
-        # Stream channels metadata (bullseye, summary, hot take)
+        # Stream channels metadata
         yield {"event": "section", "data": {
             "section": "channels_meta",
             "payload": {
                 "bullseye_ranking": analysis.get("bullseye_ranking", {}),
                 "executive_summary": analysis.get("executive_summary", ""),
-                "hot_take": analysis.get("hot_take", ""),
+                "hot_take": "",  # hot take comes later from Opus
                 "company_profile": analysis.get("company_profile", {}),
             },
         }}
 
-        yield {"event": "thinking", "data": {"message": "Channels complete. Searching for potential customers...", "detail": "Generating customer personas and searching Exa.ai for real leads"}}
+        yield {"event": "thinking", "data": {"message": "Channel scores complete. Generating detailed research...", "detail": "Deep-diving top channels + searching for leads and investors"}}
 
-        # --- Run leads + investors with streaming callbacks ---
+        # ==========================================================
+        # PHASE B: Deep dives + Leads + Investors (all in parallel)
+        # ==========================================================
+        top_channels = sorted_channels[:8]
+        batch1 = top_channels[:4]
+        batch2 = top_channels[4:8]
+
+        _event_queue: asyncio.Queue = asyncio.Queue()
+
+        # Deep dive tasks
+        async def _deep_batch(batch, batch_num):
+            try:
+                names = [c.get("channel", "") for c in batch]
+                await _event_queue.put({"event": "thinking", "data": {"message": f"Deep-diving: {', '.join(names[:3])}...", "detail": f"Generating actionable research for top channels (batch {batch_num})"}})
+                dives = await asyncio.wait_for(
+                    run_deep_dives_batch(startup_data, analysis, batch),
+                    timeout=120,
+                )
+                # Merge into channels and emit updates
+                for ch_name, dive_data in dives.items():
+                    for idx, ch in enumerate(sorted_channels):
+                        if ch.get("channel", "").lower() == ch_name.lower():
+                            ch["deep_dive"] = dive_data
+                            await _event_queue.put({"event": "channel_update", "data": {"index": idx, "deep_dive": dive_data}})
+                            await _event_queue.put({"event": "thinking", "data": {"message": f"Deep dive ready: {ch_name}", "detail": f"{len(dive_data.get('actions', []))} actions, {len(dive_data.get('research', []))} research items"}})
+                            break
+            except Exception as e:
+                logger.warning(f"Deep dive batch {batch_num} failed: {e}")
+
+        # Lead/investor callbacks push to the shared _event_queue
         leads_data = {}
         investors_data = {}
 
-        # Queues for streaming events from lead/investor finders back to SSE
-        _event_queue: asyncio.Queue = asyncio.Queue()
-
         async def _leads_progress(event_type, data):
-            """Callback from lead_finder — pushes events to the SSE queue."""
             if event_type == "thinking":
                 await _event_queue.put({"event": "thinking", "data": data})
             elif event_type == "persona_ready":
@@ -473,7 +483,6 @@ async def run_deep_analysis(report_id: str):
                 await _event_queue.put({"event": "lead", "data": data})
 
         async def _investors_progress(event_type, data):
-            """Callback from investor_finder — pushes events to the SSE queue."""
             if event_type == "thinking":
                 await _event_queue.put({"event": "thinking", "data": data})
             elif event_type == "competitor_found":
@@ -511,26 +520,44 @@ async def run_deep_analysis(report_id: str):
                 logger.error(f"[DEEP] Investor research failed for {report_id}: {e}")
                 return {"competitors": [], "competitor_investors": [], "market_investors": [], "_error": str(e)}
 
-        # Run both in background, drain the event queue as events come in
+        # Run ALL tasks in parallel: deep dives + leads + investors + hot take
+        from src.analysis.traction_engine import _generate_hot_take
+        deep1_task = asyncio.create_task(_deep_batch(batch1, 1)) if batch1 else None
+        deep2_task = asyncio.create_task(_deep_batch(batch2, 2)) if batch2 else None
         leads_task = asyncio.create_task(_run_leads())
         investors_task = asyncio.create_task(_run_investors())
+        hot_take_task = asyncio.create_task(_generate_hot_take(analysis))
 
-        # Drain events from the queue while research is running
-        while not (leads_task.done() and investors_task.done()):
+        all_tasks = [t for t in [deep1_task, deep2_task, leads_task, investors_task, hot_take_task] if t]
+
+        # Drain events from the queue while tasks run
+        while not all(t.done() for t in all_tasks):
             try:
                 event = await asyncio.wait_for(_event_queue.get(), timeout=0.5)
                 yield event
             except asyncio.TimeoutError:
-                # No events yet, check if tasks are still running
                 continue
 
-        # Drain any remaining events in the queue
+        # Drain remaining events
         while not _event_queue.empty():
-            event = await _event_queue.get()
-            yield event
+            yield await _event_queue.get()
 
         leads_data = leads_task.result()
         investors_data = investors_task.result()
+
+        # Get hot take
+        try:
+            hot_take = hot_take_task.result()
+            analysis["hot_take"] = hot_take
+            yield {"event": "section", "data": {"section": "channels_meta", "payload": {
+                "bullseye_ranking": analysis.get("bullseye_ranking", {}),
+                "executive_summary": analysis.get("executive_summary", ""),
+                "hot_take": hot_take,
+                "company_profile": analysis.get("company_profile", {}),
+            }}}
+        except Exception as e:
+            logger.warning(f"Hot take failed: {e}")
+            analysis["hot_take"] = ""
 
         # Emit section-complete markers so client pips update
         final_leads = leads_data.get("leads", [])

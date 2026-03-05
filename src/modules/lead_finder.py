@@ -582,20 +582,12 @@ async def _call_vps_proxy(prompt: str) -> str:
 async def _call_llm(prompt: str) -> str:
     """Call LLM — tries VPS proxy (free Opus) first, then OpenRouter Gemini, then Claude.
 
-    VPS proxy is free and uses Opus — best quality for persona generation.
-    OpenRouter is the fallback chain.
+    OpenRouter Sonnet first (fast). VPS proxy routes to Opus which is too slow.
     """
     last_error = None
 
-    # Try VPS proxy FIRST (Claude Max — free, Opus quality)
-    if settings.has_vps_proxy:
-        try:
-            return await _call_vps_proxy(prompt)
-        except RuntimeError as e:
-            last_error = str(e)
-            logger.warning(f"[LEADS] VPS proxy failed: {e} — trying OpenRouter")
-
-    # Fallback to OpenRouter
+    # OpenRouter first (fast Sonnet, VPS routes to slow Opus)
+    # Fallback to VPS proxy if OpenRouter fails
     if settings.openrouter_api_key:
         models_to_try = [settings.persona_model_fallback, _PERSONA_MODEL_FALLBACK]
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:

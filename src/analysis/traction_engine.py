@@ -584,6 +584,192 @@ async def _generate_hot_take(analysis: dict) -> str:
     return "No hot take available — all LLM providers failed for the synthesis step."
 
 
+ANALYSIS_PROMPT_CORE = """Analyze this startup and produce a full traction strategy report.
+
+## STARTUP DATA
+
+{startup_data}
+
+## YOUR TASK
+
+Produce a structured JSON report. Be brutally specific to THIS startup — no generic advice.
+
+Return valid JSON with this structure:
+
+{{
+  "company_profile": {{
+    "name": "string — company/product name",
+    "one_liner": "string — what they do in one sentence",
+    "stage": "string — pre-launch | launched | growing | scaling",
+    "estimated_size": "string — solo | small team (2-5) | medium (6-20) | large (20+)",
+    "market": "string — target market description",
+    "business_model": "string — how they make/plan to make money",
+    "strengths": ["list of 3-5 key strengths"],
+    "weaknesses": ["list of 3-5 key weaknesses/risks"],
+    "unique_angle": "string — what makes them genuinely different"
+  }},
+
+  "executive_summary": "string — 3-4 paragraph executive summary. Sharp enough to share standalone.",
+
+  "channel_analysis": [
+    {{
+      "channel": "string — channel name",
+      "score": "number 1-10 — fit for this specific startup",
+      "effort": "string — low | medium | high",
+      "timeline": "string — days | weeks | months to see results",
+      "budget": "string — estimated budget to test ($0, $50, $500, $5K, etc.)",
+      "specific_ideas": ["3-5 SPECIFIC tactical ideas for THIS startup"],
+      "first_move": "string — the very first concrete action to take",
+      "why_or_why_not": "string — honest assessment of why this channel does or doesn't fit",
+      "killer_insight": "string — one non-obvious insight about using this channel"
+    }}
+  ],
+
+  "bullseye_ranking": {{
+    "inner_ring": {{
+      "channels": ["top 3 channels to test RIGHT NOW"],
+      "reasoning": "string — why these 3 specifically"
+    }},
+    "promising": {{
+      "channels": ["4-6 channels worth testing next"],
+      "reasoning": "string"
+    }},
+    "long_shot": {{
+      "channels": ["remaining channels"],
+      "reasoning": "string"
+    }}
+  }},
+
+  "ninety_day_plan": {{
+    "month_1": {{ "focus": "string", "actions": ["5-7 specific actions"], "target_metric": "string", "budget": "string" }},
+    "month_2": {{ "focus": "string", "actions": ["5-7 specific actions"], "target_metric": "string", "budget": "string" }},
+    "month_3": {{ "focus": "string", "actions": ["5-7 specific actions"], "target_metric": "string", "budget": "string" }}
+  }},
+
+  "budget_allocation": {{
+    "total_recommended": "string",
+    "breakdown": [{{ "channel": "string", "amount": "string", "rationale": "string" }}]
+  }},
+
+  "risk_matrix": [
+    {{ "risk": "string", "probability": "string — low|medium|high", "impact": "string — low|medium|high", "mitigation": "string" }}
+  ],
+
+  "competitive_moat": "string — 2-3 paragraphs on long-term defensibility"
+}}
+
+Analyze ALL 19 channels. Score honestly — some should be 1-2. Bullseye must have exactly 3 in inner_ring.
+Do NOT include deep_dive or hot_take — those are generated separately.
+"""
+
+
+DEEP_DIVE_PROMPT = """You analyzed a startup and scored their traction channels. Now generate detailed deep-dive research for specific channels.
+
+## STARTUP CONTEXT
+Company: {company_name}
+One-liner: {one_liner}
+Market: {market}
+Stage: {stage}
+
+## CHANNELS TO DEEP-DIVE
+{channel_summaries}
+
+## RESEARCH TYPE MAPPING
+Use this research_type per channel:
+  - Viral Marketing → "communities" (communities where viral sharing happens)
+  - Public Relations (PR) → "journalists" (with name, outlet, beat, recent_article, twitter, relevance)
+  - Unconventional PR → "stunts" (with name, budget, virality, risk, description)
+  - Search Engine Marketing (SEM) → "keywords" (with keyword, volume, cpc, competition, strategy)
+  - Social & Display Ads → "platforms" (with name, type, audience, strategy)
+  - Offline Ads → "platforms" (billboard/OOH platforms)
+  - SEO → "keywords" (with keyword, volume, cpc, competition, strategy)
+  - Content Marketing → "content_topics" (with name, volume, difficulty, format, angle)
+  - Email Marketing → "email_sequences" (with name, subject, timing, goal)
+  - Engineering as Marketing → "free_tools" (with name, effort, viral_potential, conversion)
+  - Targeting Blogs → "newsletters" (with name, audience, frequency, contact, angle)
+  - Business Development → "partners" (with name, type, audience, fit)
+  - Sales → "sales_targets" (with name, title, reason, approach)
+  - Affiliate Programs → "affiliates" (with name, platform, audience, type, commission, url)
+  - Existing Platforms → "platforms" (with name, type, audience, strategy)
+  - Trade Shows → "conferences" (with name, date, location, cost, audience, fit)
+  - Offline Events → "conferences" (events to host or attend)
+  - Speaking Engagements → "conferences" (speaking opportunities)
+  - Community Building → "community_platforms" (with name, cost, pros, cons)
+
+## OUTPUT FORMAT
+
+Return valid JSON — a dict where each key is a channel name:
+
+{{
+  "Channel Name": {{
+    "research_type": "string",
+    "actions": [
+      {{ "title": "string", "description": "string — 2-3 sentences", "expected_result": "string — specific measurable outcome" }}
+    ],
+    "research": [array of 5-7 items matching the research_type schema above]
+  }}
+}}
+
+Use REAL names: real conferences, real publications, real communities, real keywords.
+The user should be able to Google every item you mention.
+"""
+
+
+async def _generate_deep_dives(startup_data: str, analysis: dict, channels_batch: list[dict]) -> dict:
+    """Generate deep dive research for a batch of channels."""
+    profile = analysis.get("company_profile", {})
+
+    channel_summaries = []
+    for ch in channels_batch:
+        channel_summaries.append(
+            f"- {ch.get('channel', '')}: score {ch.get('score', 0)}/10, "
+            f"insight: {ch.get('killer_insight', '')[:120]}"
+        )
+
+    prompt = DEEP_DIVE_PROMPT.format(
+        company_name=profile.get("name", "Unknown"),
+        one_liner=profile.get("one_liner", ""),
+        market=profile.get("market", ""),
+        stage=profile.get("stage", ""),
+        channel_summaries="\n".join(channel_summaries),
+    )
+
+    text = None
+
+    # PRIMARY: OpenRouter Sonnet (fast, VPS routes to Opus which is too slow)
+    if settings.openrouter_api_key:
+        try:
+            text = await _call_openrouter(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model_fallback,
+                max_tokens=8000,
+                timeout_seconds=120.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter failed for deep dives: {e}")
+
+    if text is None and settings.has_vps_proxy:
+        try:
+            text = await _call_vps_proxy(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model,
+                max_tokens=8000,
+                timeout_seconds=120.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"VPS proxy failed for deep dives: {e}")
+
+    if text is None:
+        return {}
+
+    result = _parse_json_response(text)
+    if "error" in result:
+        return {}
+    return result
+
+
 QUICK_ANALYSIS_PROMPT = """Analyze this startup and produce a QUICK overview for a teaser tweet thread.
 This is NOT the full analysis — just enough for a compelling 3-4 tweet thread.
 
@@ -674,87 +860,170 @@ async def run_quick_analysis(startup_data: str) -> dict:
     return result
 
 
+async def run_core_analysis(startup_data: str) -> dict:
+    """Phase A: Get company profile + 19 channel scores (no deep_dive). Fast ~30-60s.
+
+    Uses OpenRouter Sonnet as PRIMARY because VPS proxy routes all models to Opus
+    which is too slow for the large 19-channel prompt (causes 540s timeouts).
+    """
+    prompt = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
+    text = None
+
+    # PRIMARY: OpenRouter Sonnet (fast, ~30-60s for 19 channels)
+    if settings.openrouter_api_key:
+        logger.info("[PHASE A] Running core analysis via OpenRouter (Sonnet)...")
+        try:
+            text = await _call_openrouter(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model_fallback, max_tokens=16000, timeout_seconds=180.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter failed for Phase A: {e}")
+
+    # FALLBACK: VPS proxy (will use Opus, slower but free)
+    if text is None and settings.has_vps_proxy:
+        logger.info("[PHASE A] Falling back to VPS proxy...")
+        try:
+            text = await _call_vps_proxy(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model, max_tokens=16000, timeout_seconds=300.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"VPS proxy failed for Phase A: {e}")
+
+    # LAST RESORT: Anthropic direct
+    if text is None and settings.anthropic_api_key:
+        logger.info("[PHASE A] Falling back to Anthropic direct...")
+        try:
+            text = await _call_anthropic(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model, max_tokens=16000,
+            )
+        except RuntimeError as e:
+            return {"error": f"All LLM providers failed: {e}"}
+
+    if text is None:
+        return {"error": "No LLM provider available"}
+
+    analysis = _parse_json_response(text)
+    # Ensure all channels have empty deep_dive placeholder
+    for ch in analysis.get("channel_analysis", []):
+        if "deep_dive" not in ch:
+            ch["deep_dive"] = {"research_type": "general", "actions": [], "research": []}
+    return analysis
+
+
+async def run_deep_dives_batch(startup_data: str, analysis: dict, channels_batch: list[dict]) -> dict:
+    """Phase B: Generate deep dives for a batch of channels. Returns {channel_name: deep_dive_data}."""
+    return await _generate_deep_dives(startup_data, analysis, channels_batch)
+
+
 async def run_traction_analysis(startup_data: str) -> dict:
     """
     Run the full 19-channel traction analysis.
 
-    Two-phase approach:
-      Phase 1: Sonnet generates the full structured analysis (fast, ~60-90s on VPS)
-      Phase 2: Opus generates the hot take from the analysis summary (short, ~15-30s)
+    Three-phase approach (chunked for speed + streaming):
+      Phase A: Sonnet generates company profile + 19 channel scores/summaries (NO deep_dive) — ~30-60s
+      Phase B: Sonnet generates deep_dive for top channels in parallel batches — ~30s each
+      Phase C: Opus generates the hot take from the analysis summary — ~15-30s
 
     Fallback chain: VPS proxy → Anthropic direct → OpenRouter.
-
-    Args:
-        startup_data: Compiled text about the startup (website + twitter + any other intel)
-
-    Returns:
-        Structured analysis dict matching the JSON schema above, with hot_take injected.
     """
-    prompt = ANALYSIS_PROMPT.format(startup_data=startup_data)
+    # --- Phase A: Core analysis (scores + summaries, no deep_dive) ---
+    # OpenRouter Sonnet first (VPS routes to Opus which is too slow for big prompts)
+    prompt_a = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
     text = None
 
-    # --- Phase 1: Main analysis via Sonnet ---
-    # Priority: VPS (free, 10min timeout) → OpenRouter (paid fallback) → Anthropic direct
-
-    # Try VPS proxy first (free on Max plan, 10 min timeout)
-    if settings.has_vps_proxy:
-        logger.info("[PHASE 1] Running traction analysis via VPS proxy (Sonnet)...")
-        try:
-            text = await _call_vps_proxy(
-                prompt,
-                system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model,
-                max_tokens=settings.analysis_max_tokens,
-                timeout_seconds=540.0,  # 9 min client timeout (VPS has 10 min server timeout)
-            )
-        except RuntimeError as e:
-            logger.warning(f"VPS proxy failed: {e}")
-
-    # Fallback: OpenRouter Sonnet
-    if text is None and settings.openrouter_api_key:
-        logger.info("[PHASE 1] Falling back to OpenRouter (Sonnet)...")
+    if settings.openrouter_api_key:
+        logger.info("[PHASE A] Running core traction analysis via OpenRouter (Sonnet)...")
         try:
             text = await _call_openrouter(
-                prompt,
+                prompt_a,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
                 model=settings.analysis_model_fallback,
-                max_tokens=settings.analysis_max_tokens,
+                max_tokens=16000,
+                timeout_seconds=180.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter failed for Phase A: {e}")
+
+    if text is None and settings.has_vps_proxy:
+        logger.info("[PHASE A] Falling back to VPS proxy (Opus)...")
+        try:
+            text = await _call_vps_proxy(
+                prompt_a,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model=settings.analysis_model,
+                max_tokens=16000,
                 timeout_seconds=300.0,
             )
         except RuntimeError as e:
-            logger.warning(f"OpenRouter failed: {e}")
+            logger.warning(f"VPS proxy failed for Phase A: {e}")
 
-    # Last resort: Anthropic direct
     if text is None and settings.anthropic_api_key:
-        logger.info("[PHASE 1] Falling back to Anthropic direct (Sonnet)...")
+        logger.info("[PHASE A] Falling back to Anthropic direct (Sonnet)...")
         try:
             text = await _call_anthropic(
-                prompt,
+                prompt_a,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
                 model=settings.analysis_model,
-                max_tokens=settings.analysis_max_tokens,
+                max_tokens=16000,
             )
         except RuntimeError as e:
-            logger.error(f"Anthropic also failed: {e}")
+            logger.error(f"Anthropic also failed for Phase A: {e}")
             return {"error": f"All LLM providers failed: {e}"}
 
     if text is None:
-        return {"error": "No LLM provider available (set VPS_PROXY_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY)"}
+        return {"error": "No LLM provider available"}
 
     analysis = _parse_json_response(text)
 
     if "error" in analysis and "raw_response" in analysis:
-        # Main analysis parse failed — don't bother with hot take
         return analysis
 
-    # --- Phase 2: Hot take via Opus (short, high-value synthesis) ---
-    logger.info("[PHASE 2] Generating hot take via Opus...")
+    logger.info(f"[PHASE A] Core analysis complete: {len(analysis.get('channel_analysis', []))} channels scored")
+
+    # --- Phase B: Deep dives for top channels (parallel batches) ---
+    channels = analysis.get("channel_analysis", [])
+    sorted_channels = sorted(channels, key=lambda c: c.get("score", 0), reverse=True)
+    # Deep dive only the top 8 channels (the ones that matter most)
+    top_channels = sorted_channels[:8]
+
+    if top_channels:
+        logger.info(f"[PHASE B] Generating deep dives for top {len(top_channels)} channels...")
+        # Run in 2 batches of 4 for manageable prompt sizes
+        batch_size = 4
+        for batch_start in range(0, len(top_channels), batch_size):
+            batch = top_channels[batch_start:batch_start + batch_size]
+            batch_names = [c.get("channel", "") for c in batch]
+            logger.info(f"[PHASE B] Batch: {batch_names}")
+
+            try:
+                deep_dives = await _generate_deep_dives(startup_data, analysis, batch)
+                # Merge deep dives back into the channels
+                for ch_name, dive_data in deep_dives.items():
+                    for ch in channels:
+                        if ch.get("channel", "").lower() == ch_name.lower():
+                            ch["deep_dive"] = dive_data
+                            break
+            except Exception as e:
+                logger.warning(f"[PHASE B] Deep dive batch failed (non-fatal): {e}")
+
+    # Ensure all channels have at least an empty deep_dive
+    for ch in channels:
+        if "deep_dive" not in ch:
+            ch["deep_dive"] = {"research_type": "general", "actions": [], "research": []}
+
+    analysis["channel_analysis"] = channels
+
+    # --- Phase C: Hot take via Opus ---
+    logger.info("[PHASE C] Generating hot take via Opus...")
     try:
         hot_take = await _generate_hot_take(analysis)
         analysis["hot_take"] = hot_take
-        logger.info(f"[PHASE 2] Hot take generated ({len(hot_take)} chars)")
+        logger.info(f"[PHASE C] Hot take generated ({len(hot_take)} chars)")
     except Exception as e:
-        logger.warning(f"[PHASE 2] Hot take generation failed (non-fatal): {e}")
+        logger.warning(f"[PHASE C] Hot take generation failed (non-fatal): {e}")
         analysis["hot_take"] = ""
 
     return analysis

@@ -1885,6 +1885,40 @@ def _streaming_js():
     addLeadRow(l, d.index != null ? d.index : leads.length-1);
   });
 
+  es.addEventListener('channel_update', function(e){
+    var d = JSON.parse(e.data);
+    var idx = d.index;
+    var deepDive = d.deep_dive;
+    if(idx == null || !deepDive) return;
+    // Update the accordion content for this channel
+    var expandRow = document.getElementById('ch-'+idx);
+    if(!expandRow) return;
+    var actions = deepDive.actions||[];
+    var html = '';
+    if(actions.length){
+      html += '<div class="action-grid">';
+      actions.forEach(function(a){
+        html += '<div class="action-card"><div class="action-title">'+escHtml(a.title||'')+'</div>'+
+          '<div class="action-desc">'+escHtml(a.description||'')+'</div>'+
+          '<div class="action-result">'+escHtml(a.expected_result||'')+'</div></div>';
+      });
+      html += '</div>';
+    }
+    var research = deepDive.research||[];
+    if(research.length){
+      html += '<div style="margin-top:12px;font-size:11px;color:var(--text2)">'+research.length+' research items available</div>';
+    }
+    expandRow.querySelector('td').innerHTML = html;
+    // Flash the row to indicate update
+    var chRow = document.querySelector('tr.ch-row[data-target="ch-'+idx+'"]');
+    if(chRow){
+      chRow.style.borderLeft = '3px solid var(--cyan)';
+      setTimeout(function(){ chRow.style.borderLeft = ''; }, 2000);
+    }
+    // Update the channel object in memory
+    if(channels[idx]) channels[idx].deep_dive = deepDive;
+  });
+
   es.addEventListener('competitor', function(e){
     var d = JSON.parse(e.data);
     var c = d.competitor;
