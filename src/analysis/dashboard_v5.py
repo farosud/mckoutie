@@ -1,0 +1,868 @@
+"""
+Dashboard v5 — Formal BI-style consulting dashboard.
+
+Design language:
+  - Clean, data-dense, spreadsheet-forward
+  - No tabs — single scrollable page, sections anchored in a left nav
+  - Spreadsheet-like tables for leads & investors (the star of the show)
+  - "Living report" emphasis — timestamps, update indicators, activity feed
+  - Muted palette: charcoal + slate + accent green for scores
+  - Inter for text, JetBrains Mono for numbers
+"""
+
+from html import escape
+from datetime import datetime, timezone
+
+
+def render_dashboard_v5(
+    analysis: dict,
+    startup_name: str,
+    report_id: str,
+    tier: str = "free",
+    checkout_url: str = "#",
+    upgrade_url: str = "#",
+) -> str:
+    profile = analysis.get("company_profile", {})
+    channels = analysis.get("channel_analysis", [])
+    bullseye = analysis.get("bullseye_ranking", {})
+    plan = analysis.get("ninety_day_plan", {})
+    budget = analysis.get("budget_allocation", {})
+    risks = analysis.get("risk_matrix", [])
+    moat = analysis.get("competitive_moat", "")
+    hot_take = analysis.get("hot_take", "")
+    exec_summary = analysis.get("executive_summary", "")
+    leads_data = analysis.get("leads_research", {})
+    investors_data = analysis.get("investor_research", {})
+
+    sorted_ch = sorted(channels, key=lambda c: c.get("score", 0), reverse=True)
+    top_score = sorted_ch[0].get("score", 0) if sorted_ch else 0
+    top_channel = sorted_ch[0].get("channel", "") if sorted_ch else ""
+    avg_score = round(sum(c.get("score", 0) for c in channels) / max(len(channels), 1), 1)
+    leads = leads_data.get("leads", [])
+    personas = leads_data.get("personas", [])
+    competitors = investors_data.get("competitors", [])
+    comp_investors = investors_data.get("competitor_investors", [])
+    mkt_investors = investors_data.get("market_investors", [])
+    all_investors = comp_investors + mkt_investors
+
+    inner = bullseye.get("inner_ring", {}).get("channels", [])
+    promising = bullseye.get("promising", {}).get("channels", [])
+
+    now = datetime.now(tz=timezone.utc)
+    now_str = now.strftime("%b %d, %Y · %H:%M UTC")
+    date_short = now.strftime("%b %d")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{_e(startup_name)} — mckoutie & company</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>{_css()}</style>
+</head>
+<body>
+
+{_header(startup_name, now_str, tier, report_id)}
+
+<div class="shell">
+  {_nav(len(leads), len(all_investors), len(sorted_ch))}
+  <main class="content">
+    {_section_kpis(top_score, top_channel, avg_score, len(leads), len(all_investors), len(competitors))}
+    {_section_executive(exec_summary, hot_take)}
+    {_section_bullseye(inner, promising, sorted_ch)}
+    {_section_channels(sorted_ch, tier)}
+    {_section_leads(leads, personas, tier, checkout_url, date_short)}
+    {_section_investors(competitors, comp_investors, mkt_investors, tier, upgrade_url, date_short)}
+    {_section_strategy(plan, budget, risks, moat, tier, checkout_url)}
+    {_section_footer(startup_name)}
+  </main>
+</div>
+
+<script>{_js()}</script>
+</body>
+</html>"""
+
+
+def _e(t):
+    return escape(str(t)) if t else ""
+
+
+# ═══════════════════════════════════════════════
+# CSS
+# ═══════════════════════════════════════════════
+def _css():
+    return """
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0d10;
+  --panel:#111318;
+  --surface:#161920;
+  --surface2:#1c2028;
+  --surface3:#22262e;
+  --border:#1e2230;
+  --border2:#2a2f3d;
+  --border3:#353b4a;
+  --text:#c8cdd8;
+  --text2:#7d849a;
+  --text3:#4e5568;
+  --white:#eaedf3;
+  --accent:#4f8af7;
+  --accent-soft:rgba(79,138,247,.12);
+  --green:#2ecc71;
+  --green-soft:rgba(46,204,113,.1);
+  --amber:#e6a23c;
+  --amber-soft:rgba(230,162,60,.1);
+  --red:#e74c3c;
+  --red-soft:rgba(231,76,60,.1);
+  --cyan:#17c3b2;
+  --purple:#a78bfa;
+  --radius:4px;
+  --mono:'JetBrains Mono',monospace;
+  --sans:'Inter',-apple-system,system-ui,sans-serif;
+}
+html{scroll-behavior:smooth}
+body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:1.5;font-size:13px;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+::selection{background:var(--accent);color:var(--white)}
+
+/* ── Header ── */
+.header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 24px;height:48px;
+  background:var(--panel);border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:200;
+}
+.header-left{display:flex;align-items:center;gap:16px}
+.logo{font-family:var(--mono);font-weight:600;font-size:13px;color:var(--text2);letter-spacing:-.3px}
+.logo b{color:var(--white);font-weight:700}
+.logo span{color:var(--accent)}
+.hdr-sep{width:1px;height:20px;background:var(--border2)}
+.hdr-company{font-weight:600;font-size:14px;color:var(--white)}
+.header-right{display:flex;align-items:center;gap:16px}
+.live-badge{
+  display:flex;align-items:center;gap:6px;
+  padding:3px 10px;border-radius:12px;
+  background:var(--green-soft);font-size:11px;font-weight:500;color:var(--green);
+}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.hdr-time{font-size:11px;color:var(--text3);font-family:var(--mono)}
+.hdr-id{font-size:10px;color:var(--text3);font-family:var(--mono);padding:2px 6px;background:var(--surface);border-radius:3px}
+.tier-badge{font-size:10px;padding:2px 8px;border-radius:3px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.tier-free{background:var(--surface3);color:var(--text2)}
+.tier-starter{background:var(--accent-soft);color:var(--accent)}
+.tier-growth{background:rgba(167,139,250,.12);color:var(--purple)}
+
+/* ── Shell ── */
+.shell{display:flex;min-height:calc(100vh - 48px)}
+
+/* ── Nav ── */
+.nav{
+  width:200px;background:var(--panel);border-right:1px solid var(--border);
+  padding:16px 0;position:sticky;top:48px;height:calc(100vh - 48px);
+  overflow-y:auto;flex-shrink:0;
+}
+.nav-group{margin-bottom:20px}
+.nav-label{font-size:9px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text3);padding:0 16px;margin-bottom:6px;font-weight:600}
+.nav-link{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:6px 16px;font-size:12px;color:var(--text2);cursor:pointer;
+  border-left:2px solid transparent;transition:all .1s;text-decoration:none;
+}
+.nav-link:hover{color:var(--white);background:var(--surface);text-decoration:none}
+.nav-link.active{color:var(--white);border-left-color:var(--accent);background:var(--surface)}
+.nav-count{font-size:10px;font-family:var(--mono);color:var(--text3);background:var(--surface2);padding:1px 5px;border-radius:3px}
+
+/* ── Content ── */
+.content{flex:1;padding:24px 32px;max-width:1200px;overflow-y:auto}
+
+/* ── KPI Row ── */
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:28px}
+.kpi{
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px;position:relative;
+}
+.kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--text3);margin-bottom:8px;font-weight:500}
+.kpi-value{font-size:28px;font-weight:700;font-family:var(--mono);color:var(--white);line-height:1}
+.kpi-sub{font-size:11px;color:var(--text2);margin-top:4px}
+.kpi-accent .kpi-value{color:var(--green)}
+.kpi-blue .kpi-value{color:var(--accent)}
+.kpi-amber .kpi-value{color:var(--amber)}
+.kpi-cyan .kpi-value{color:var(--cyan)}
+
+/* ── Section ── */
+.section{margin-bottom:36px;scroll-margin-top:64px}
+.section-header{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border);
+}
+.section-title{font-size:15px;font-weight:600;color:var(--white);display:flex;align-items:center;gap:8px}
+.section-title .icon{font-size:14px;opacity:.6}
+.update-badge{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:10px;color:var(--green);font-weight:500;
+  padding:2px 8px;border-radius:10px;background:var(--green-soft);
+}
+.update-badge .dot{width:5px;height:5px;border-radius:50%;background:var(--green)}
+
+/* ── Executive / Hot Take ── */
+.exec-grid{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-bottom:28px}
+.exec-box{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
+.exec-label{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--text3);margin-bottom:10px;font-weight:500}
+.exec-text{font-size:13px;color:var(--text);line-height:1.7}
+.hottake-box{
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:20px;border-left:3px solid var(--amber);
+}
+.hottake-box .exec-label{color:var(--amber)}
+.hottake-box .exec-text{color:var(--text);font-style:italic}
+
+/* ── Bullseye ── */
+.bullseye-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+.ring-card{
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px;border-top:3px solid var(--border2);
+}
+.ring-card.inner{border-top-color:var(--green)}
+.ring-card.promising{border-top-color:var(--amber)}
+.ring-card.longshot{border-top-color:var(--text3)}
+.ring-title{font-size:11px;text-transform:uppercase;letter-spacing:.8px;font-weight:600;margin-bottom:10px}
+.ring-card.inner .ring-title{color:var(--green)}
+.ring-card.promising .ring-title{color:var(--amber)}
+.ring-card.longshot .ring-title{color:var(--text3)}
+.ring-items{list-style:none;font-size:12px;color:var(--text2)}
+.ring-items li{padding:3px 0;display:flex;align-items:center;gap:6px}
+.ring-items li::before{content:'';width:4px;height:4px;border-radius:50%;flex-shrink:0}
+.ring-card.inner .ring-items li::before{background:var(--green)}
+.ring-card.promising .ring-items li::before{background:var(--amber)}
+.ring-card.longshot .ring-items li::before{background:var(--text3)}
+
+/* ── Data Table (spreadsheet) ── */
+.data-table-wrap{
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  overflow:hidden;
+}
+.data-table{width:100%;border-collapse:collapse;font-size:12px}
+.data-table thead{background:var(--surface2)}
+.data-table th{
+  padding:10px 14px;text-align:left;font-weight:600;color:var(--text2);
+  font-size:10px;text-transform:uppercase;letter-spacing:.6px;
+  border-bottom:1px solid var(--border2);white-space:nowrap;
+  position:sticky;top:0;background:var(--surface2);
+  user-select:none;cursor:default;
+}
+.data-table th.sortable{cursor:pointer}
+.data-table th.sortable:hover{color:var(--white)}
+.data-table td{
+  padding:10px 14px;border-bottom:1px solid var(--border);
+  color:var(--text);vertical-align:middle;
+}
+.data-table tbody tr{transition:background .08s}
+.data-table tbody tr:hover{background:var(--surface)}
+.data-table tbody tr:last-child td{border-bottom:none}
+
+/* Cell types */
+.cell-rank{font-family:var(--mono);font-size:11px;color:var(--text3);width:36px;text-align:center}
+.cell-name{font-weight:600;color:var(--white);white-space:nowrap}
+.cell-name a{color:var(--white)}
+.cell-name a:hover{color:var(--accent)}
+.cell-score{font-family:var(--mono);font-weight:600}
+.cell-tag{
+  display:inline-block;padding:2px 8px;border-radius:3px;
+  font-size:10px;font-weight:500;white-space:nowrap;
+}
+.cell-muted{color:var(--text2);font-size:11px}
+.cell-desc{color:var(--text2);font-size:11px;max-width:320px;line-height:1.4}
+
+/* Score bar */
+.score-bar{display:flex;align-items:center;gap:8px;min-width:120px}
+.score-track{flex:1;height:5px;border-radius:3px;background:var(--surface3);overflow:hidden}
+.score-fill{height:100%;border-radius:3px;transition:width .3s}
+.score-label{font-family:var(--mono);font-size:12px;font-weight:600;min-width:22px;text-align:right}
+
+/* Platform tags */
+.tag-twitter{background:#1a2d4a;color:#5b9aef}
+.tag-linkedin{background:#1a2d4a;color:#4a9be8}
+.tag-reddit{background:#3a1e1e;color:#e87461}
+.tag-discord{background:#2d1f4a;color:#9b8be0}
+.tag-github{background:#1e2428;color:#b0b8c4}
+.tag-substack{background:#3a2a1a;color:#e8a04a}
+.tag-vc{background:#1a3a2a;color:#4ade80}
+.tag-angel{background:#3a3a1a;color:#e8d04a}
+.tag-market{background:#1a2a3a;color:#4abce8}
+.tag-competitor{background:#3a1a2a;color:#e84a8a}
+
+/* ── Persona Strip ── */
+.persona-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+.persona-card{
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px;
+}
+.persona-name{font-size:13px;font-weight:600;color:var(--white);margin-bottom:4px}
+.persona-desc{font-size:11px;color:var(--text2);line-height:1.5;margin-bottom:10px}
+.persona-tags{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px}
+.persona-signals{list-style:none;font-size:11px;color:var(--text3)}
+.persona-signals li{padding:2px 0}
+.persona-signals li::before{content:'→ ';color:var(--text3)}
+
+/* ── Competitor Cards ── */
+.comp-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:20px}
+.comp-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px}
+.comp-name{font-size:13px;font-weight:600;color:var(--white);margin-bottom:2px}
+.comp-name a{color:var(--white)}
+.comp-funding{font-size:18px;font-weight:700;font-family:var(--mono);color:var(--green);margin:4px 0}
+.comp-desc{font-size:11px;color:var(--text3);margin-bottom:6px}
+.comp-investors-list{font-size:11px;color:var(--text2)}
+
+/* ── Strategy ── */
+.plan-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:24px}
+.plan-card{
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:18px;position:relative;
+}
+.plan-month-label{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--accent);font-weight:600;margin-bottom:4px}
+.plan-focus{font-size:14px;font-weight:600;color:var(--white);margin-bottom:10px;line-height:1.3}
+.plan-actions{list-style:none;font-size:11px;color:var(--text2);margin-bottom:10px}
+.plan-actions li{padding:3px 0;padding-left:14px;position:relative}
+.plan-actions li::before{content:'›';position:absolute;left:0;color:var(--text3);font-weight:700}
+.plan-metric{font-size:11px;color:var(--green);font-weight:500;margin-bottom:2px}
+.plan-budget{font-size:11px;color:var(--text3);font-family:var(--mono)}
+
+/* ── Lock/CTA ── */
+.lock-card{
+  background:var(--surface);border:1px dashed var(--border2);border-radius:var(--radius);
+  padding:28px;text-align:center;
+}
+.lock-title{font-size:14px;font-weight:600;color:var(--white);margin-bottom:6px}
+.lock-desc{font-size:12px;color:var(--text2);margin-bottom:14px;max-width:400px;margin-left:auto;margin-right:auto}
+.cta-btn{
+  display:inline-block;padding:8px 24px;background:var(--accent);color:var(--white);
+  border:none;border-radius:var(--radius);font-size:12px;font-weight:600;
+  cursor:pointer;font-family:var(--sans);transition:all .12s;text-decoration:none;
+}
+.cta-btn:hover{background:#3a75e0;text-decoration:none}
+.cta-btn.purple{background:var(--purple)}
+.cta-btn.purple:hover{background:#8b6ce0}
+
+/* ── Footer ── */
+.footer{
+  margin-top:40px;padding:24px 0;border-top:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.footer-left{font-size:11px;color:var(--text3)}
+.footer-right{font-size:11px;color:var(--text3);font-family:var(--mono)}
+
+/* ── Responsive ── */
+@media(max-width:1024px){
+  .nav{display:none}
+  .kpis{grid-template-columns:repeat(3,1fr)}
+  .exec-grid{grid-template-columns:1fr}
+  .bullseye-row{grid-template-columns:1fr}
+  .plan-grid{grid-template-columns:1fr}
+  .persona-strip{grid-template-columns:1fr}
+  .content{padding:16px}
+}
+@media(max-width:640px){
+  .kpis{grid-template-columns:repeat(2,1fr)}
+  .header{padding:0 12px}
+  .hdr-id,.hdr-time{display:none}
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--border3)}
+"""
+
+
+# ═══════════════════════════════════════════════
+# Components
+# ═══════════════════════════════════════════════
+
+def _header(name, now_str, tier, report_id):
+    tc = f"tier-{tier}"
+    return f"""
+<div class="header">
+  <div class="header-left">
+    <div class="logo"><b>mckoutie</b><span>&</span>company</div>
+    <div class="hdr-sep"></div>
+    <div class="hdr-company">{_e(name)}</div>
+  </div>
+  <div class="header-right">
+    <div class="live-badge"><span class="live-dot"></span> Living Report</div>
+    <span class="hdr-time">{_e(now_str)}</span>
+    <span class="hdr-id">{_e(report_id[:12])}</span>
+    <span class="tier-badge {tc}">{_e(tier)}</span>
+  </div>
+</div>"""
+
+
+def _nav(n_leads, n_investors, n_channels):
+    return f"""
+<nav class="nav">
+  <div class="nav-group">
+    <div class="nav-label">Report</div>
+    <a href="#kpis" class="nav-link active">Dashboard</a>
+    <a href="#executive" class="nav-link">Executive Summary</a>
+    <a href="#bullseye" class="nav-link">Bullseye</a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Analysis</div>
+    <a href="#channels" class="nav-link">Channels <span class="nav-count">{n_channels}</span></a>
+    <a href="#leads" class="nav-link">Leads <span class="nav-count">{n_leads}</span></a>
+    <a href="#investors" class="nav-link">Investors <span class="nav-count">{n_investors}</span></a>
+  </div>
+  <div class="nav-group">
+    <div class="nav-label">Strategy</div>
+    <a href="#plan" class="nav-link">90-Day Plan</a>
+    <a href="#budget" class="nav-link">Budget</a>
+    <a href="#risks" class="nav-link">Risk Matrix</a>
+  </div>
+</nav>"""
+
+
+def _section_kpis(top_score, top_channel, avg, n_leads, n_inv, n_comp):
+    return f"""
+<div class="section" id="kpis">
+  <div class="kpis">
+    <div class="kpi kpi-accent">
+      <div class="kpi-label">Top Score</div>
+      <div class="kpi-value">{top_score}<span style="font-size:14px;color:var(--text3)">/10</span></div>
+      <div class="kpi-sub">{_e(top_channel)}</div>
+    </div>
+    <div class="kpi kpi-blue">
+      <div class="kpi-label">Avg Score</div>
+      <div class="kpi-value">{avg}</div>
+      <div class="kpi-sub">across all channels</div>
+    </div>
+    <div class="kpi kpi-cyan">
+      <div class="kpi-label">Leads Found</div>
+      <div class="kpi-value">{n_leads}</div>
+      <div class="kpi-sub">potential customers</div>
+    </div>
+    <div class="kpi kpi-amber">
+      <div class="kpi-label">Investors</div>
+      <div class="kpi-value">{n_inv}</div>
+      <div class="kpi-sub">relevant to your space</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Competitors</div>
+      <div class="kpi-value">{n_comp}</div>
+      <div class="kpi-sub">mapped</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Channels</div>
+      <div class="kpi-value">19</div>
+      <div class="kpi-sub">analyzed</div>
+    </div>
+  </div>
+</div>"""
+
+
+def _section_executive(summary, hot_take):
+    return f"""
+<div class="section" id="executive">
+  <div class="section-header">
+    <div class="section-title">Executive Summary</div>
+  </div>
+  <div class="exec-grid">
+    <div class="exec-box">
+      <div class="exec-label">Analysis</div>
+      <div class="exec-text">{_e(summary)}</div>
+    </div>
+    <div class="hottake-box">
+      <div class="exec-label">Hot Take</div>
+      <div class="exec-text">{_e(hot_take)}</div>
+    </div>
+  </div>
+</div>"""
+
+
+def _section_bullseye(inner, promising, channels):
+    longshot = [c.get("channel", "") for c in channels
+                if c.get("channel", "") not in inner and c.get("channel", "") not in promising]
+
+    def _items(lst):
+        return "".join(f"<li>{_e(c)}</li>" for c in lst)
+
+    return f"""
+<div class="section" id="bullseye">
+  <div class="section-header">
+    <div class="section-title">Bullseye Framework</div>
+  </div>
+  <div class="bullseye-row">
+    <div class="ring-card inner">
+      <div class="ring-title">Inner Ring — Do Now</div>
+      <ul class="ring-items">{_items(inner)}</ul>
+    </div>
+    <div class="ring-card promising">
+      <div class="ring-title">Promising — Test Next</div>
+      <ul class="ring-items">{_items(promising)}</ul>
+    </div>
+    <div class="ring-card longshot">
+      <div class="ring-title">Long Shot — Later</div>
+      <ul class="ring-items">{_items(longshot[:6])}</ul>
+    </div>
+  </div>
+</div>"""
+
+
+def _section_channels(channels, tier):
+    rows = ""
+    for i, ch in enumerate(channels):
+        score = ch.get("score", 0)
+        color = "var(--green)" if score >= 8 else "var(--amber)" if score >= 6 else "var(--text3)"
+        pct = score * 10
+
+        insight = ch.get("killer_insight", "")
+        first_move = ch.get("first_move", "")
+
+        if tier in ("starter", "growth"):
+            move_html = f'<span class="cell-muted">{_e(first_move[:120])}</span>'
+        else:
+            move_html = '<span style="color:var(--text3);font-size:10px">Starter plan</span>'
+
+        rows += f"""
+<tr>
+  <td class="cell-rank">{i+1}</td>
+  <td class="cell-name">{_e(ch.get("channel",""))}</td>
+  <td>
+    <div class="score-bar">
+      <span class="score-label" style="color:{color}">{score}</span>
+      <div class="score-track"><div class="score-fill" style="width:{pct}%;background:{color}"></div></div>
+    </div>
+  </td>
+  <td class="cell-muted">{_e(ch.get("effort",""))}</td>
+  <td class="cell-muted">{_e(ch.get("timeline",""))}</td>
+  <td style="font-family:var(--mono);font-size:11px;color:var(--text2)">{_e(ch.get("budget",""))}</td>
+  <td class="cell-desc">{_e(insight[:100])}</td>
+  <td>{move_html}</td>
+</tr>"""
+
+    return f"""
+<div class="section" id="channels">
+  <div class="section-header">
+    <div class="section-title">Channel Analysis</div>
+    <div class="update-badge"><span class="dot"></span> Updated today</div>
+  </div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr>
+        <th>#</th><th>Channel</th><th style="min-width:130px">Score</th>
+        <th>Effort</th><th>Timeline</th><th>Budget</th>
+        <th>Key Insight</th><th>First Move</th>
+      </tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>
+</div>"""
+
+
+def _section_leads(leads, personas, tier, checkout_url, date_short):
+    # Personas
+    persona_html = ""
+    if personas:
+        cards = ""
+        for p in personas[:3]:
+            tags = "".join(
+                f'<span class="cell-tag {_tag_class(pl)}">{_e(pl)}</span> '
+                for pl in p.get("platforms", [])
+            )
+            sigs = "".join(f"<li>{_e(s[:90])}</li>" for s in p.get("pain_signals", [])[:3])
+            cards += f"""
+<div class="persona-card">
+  <div class="persona-name">{_e(p.get("name",""))}</div>
+  <div class="persona-desc">{_e(p.get("description","")[:180])}</div>
+  <div class="persona-tags">{tags}</div>
+  <ul class="persona-signals">{sigs}</ul>
+</div>"""
+        persona_html = f'<div class="persona-strip">{cards}</div>'
+
+    # Leads table
+    lead_rows = ""
+    for i, lead in enumerate(leads):
+        score = lead.get("score", 0)
+        color = "var(--green)" if score >= 8 else "var(--amber)" if score >= 6 else "var(--text3)"
+        platform = lead.get("platform", "")
+        handle = lead.get("handle", "")
+        url = lead.get("url", "#")
+        name = lead.get("name", "")
+        title = lead.get("title", "")
+        relevance = lead.get("relevance", "")
+
+        lead_rows += f"""
+<tr>
+  <td class="cell-rank">{i+1}</td>
+  <td class="cell-name"><a href="{_e(url)}" target="_blank" rel="noopener">{_e(name)}</a></td>
+  <td class="cell-muted">{_e(title)}</td>
+  <td><span class="cell-tag {_tag_class(platform)}">{_e(platform)}</span></td>
+  <td style="font-family:var(--mono);font-size:11px;color:var(--text2)">{_e(handle)}</td>
+  <td class="cell-score" style="color:{color}">{score}/10</td>
+  <td class="cell-desc">{_e(relevance[:160])}</td>
+</tr>"""
+
+    # Outreach lock
+    outreach_cta = ""
+    if tier == "free" and leads:
+        outreach_cta = f"""
+<div class="lock-card" style="margin-top:16px">
+  <div class="lock-title">Outreach Playbook</div>
+  <div class="lock-desc">Personalized messaging templates, approach angles, and timing strategy for each lead</div>
+  <a href="{_e(checkout_url)}" class="cta-btn">Unlock with Starter — $39/mo</a>
+</div>"""
+
+    return f"""
+<div class="section" id="leads">
+  <div class="section-header">
+    <div class="section-title">Potential Leads</div>
+    <div class="update-badge"><span class="dot"></span> Updating weekly · Last: {date_short}</div>
+  </div>
+  {persona_html}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr>
+        <th>#</th><th>Name</th><th>Title / Role</th><th>Platform</th>
+        <th>Handle</th><th>Score</th><th>Why They're a Lead</th>
+      </tr></thead>
+      <tbody>{lead_rows}</tbody>
+    </table>
+  </div>
+  {outreach_cta}
+</div>"""
+
+
+def _section_investors(competitors, comp_investors, mkt_investors, tier, upgrade_url, date_short):
+    # Competitor cards
+    comp_html = ""
+    if competitors:
+        cards = ""
+        for c in competitors:
+            inv = ", ".join(c.get("investors", [])[:4])
+            cards += f"""
+<div class="comp-card">
+  <div class="comp-name"><a href="{_e(c.get('url','#'))}" target="_blank" rel="noopener">{_e(c.get("name",""))}</a></div>
+  <div class="comp-funding">{_e(c.get("funding","—"))}</div>
+  <div class="comp-desc">{_e(c.get("description","")[:80])}</div>
+  <div class="comp-investors-list">{_e(inv)}</div>
+</div>"""
+        comp_html = f"""
+<div style="margin-bottom:20px">
+  <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px">Competitor Landscape</div>
+  <div class="comp-row">{cards}</div>
+</div>"""
+
+    # Investor table
+    all_inv = []
+    for inv in comp_investors:
+        all_inv.append({**inv, "_source": "Competitor Portfolio"})
+    for inv in mkt_investors:
+        all_inv.append({**inv, "_source": "Market Search"})
+
+    inv_rows = ""
+    for i, inv in enumerate(all_inv):
+        inv_type = inv.get("type", "VC")
+        source = inv.get("_source", "")
+        type_tag = "tag-vc" if inv_type == "VC" else "tag-angel" if inv_type == "Angel" else "tag-vc"
+        source_tag = "tag-competitor" if "Competitor" in source else "tag-market"
+        url = inv.get("url", "#")
+
+        inv_rows += f"""
+<tr>
+  <td class="cell-rank">{i+1}</td>
+  <td class="cell-name"><a href="{_e(url)}" target="_blank" rel="noopener">{_e(inv.get("name",""))}</a></td>
+  <td><span class="cell-tag {type_tag}">{_e(inv_type)}</span></td>
+  <td class="cell-desc">{_e(inv.get("focus","")[:180])}</td>
+  <td><span class="cell-tag {source_tag}">{_e(source)}</span></td>
+</tr>"""
+
+    # Deep dive lock
+    deep_cta = ""
+    if tier in ("free", "starter"):
+        deep_cta = f"""
+<div class="lock-card" style="margin-top:16px">
+  <div class="lock-title">Investor Deep Dive</div>
+  <div class="lock-desc">Portfolio analysis, warm intro paths, thesis alignment scores, and personalized outreach templates</div>
+  <a href="{_e(upgrade_url)}" class="cta-btn purple">Unlock with Growth — $200/mo</a>
+</div>"""
+
+    return f"""
+<div class="section" id="investors">
+  <div class="section-header">
+    <div class="section-title">Investor Intelligence</div>
+    <div class="update-badge"><span class="dot"></span> Updating weekly · Last: {date_short}</div>
+  </div>
+  {comp_html}
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr>
+        <th>#</th><th>Investor</th><th>Type</th><th>Focus / Thesis</th><th>Source</th>
+      </tr></thead>
+      <tbody>{inv_rows}</tbody>
+    </table>
+  </div>
+  {deep_cta}
+</div>"""
+
+
+def _section_strategy(plan, budget, risks, moat, tier, checkout_url):
+    if tier == "free":
+        return f"""
+<div class="section" id="plan">
+  <div class="section-header">
+    <div class="section-title">Strategy & Execution</div>
+  </div>
+  <div class="lock-card">
+    <div class="lock-title">90-Day Action Plan</div>
+    <div class="lock-desc">Month-by-month breakdown with specific actions, budget allocation, risk matrix, and competitive moat analysis</div>
+    <a href="{_e(checkout_url)}" class="cta-btn">Unlock Strategy — $39/mo</a>
+  </div>
+</div>"""
+
+    # 90-day plan
+    months_html = ""
+    for key, label in [("month_1", "Month 1"), ("month_2", "Month 2"), ("month_3", "Month 3")]:
+        m = plan.get(key, {})
+        actions = "".join(f"<li>{_e(a[:110])}</li>" for a in m.get("actions", []))
+        months_html += f"""
+<div class="plan-card">
+  <div class="plan-month-label">{label}</div>
+  <div class="plan-focus">{_e(m.get("focus",""))}</div>
+  <ul class="plan-actions">{actions}</ul>
+  <div class="plan-metric">{_e(m.get("target_metric",""))}</div>
+  <div class="plan-budget">Budget: {_e(m.get("budget",""))}</div>
+</div>"""
+
+    plan_html = f"""
+<div class="section" id="plan">
+  <div class="section-header"><div class="section-title">90-Day Action Plan</div></div>
+  <div class="plan-grid">{months_html}</div>
+</div>"""
+
+    # Budget
+    budget_rows = ""
+    for b in budget.get("breakdown", []):
+        budget_rows += f"""
+<tr>
+  <td class="cell-name">{_e(b.get("channel",""))}</td>
+  <td style="font-family:var(--mono);font-weight:600;color:var(--green)">{_e(b.get("amount",""))}</td>
+  <td class="cell-desc">{_e(b.get("rationale",""))}</td>
+</tr>"""
+
+    budget_html = f"""
+<div class="section" id="budget">
+  <div class="section-header">
+    <div class="section-title">Budget Allocation</div>
+    <span style="font-size:12px;color:var(--text2);font-family:var(--mono)">{_e(budget.get("total_recommended",""))}</span>
+  </div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Channel</th><th>Amount</th><th>Rationale</th></tr></thead>
+      <tbody>{budget_rows}</tbody>
+    </table>
+  </div>
+</div>"""
+
+    # Risks
+    risk_rows = ""
+    for r in risks:
+        prob = r.get("probability", "")
+        impact = r.get("impact", "")
+        pc = "var(--red)" if prob == "high" else "var(--amber)" if prob == "medium" else "var(--text2)"
+        ic = "var(--red)" if impact == "high" else "var(--amber)" if impact == "medium" else "var(--text2)"
+        risk_rows += f"""
+<tr>
+  <td style="color:var(--text)">{_e(r.get("risk",""))}</td>
+  <td><span class="cell-tag" style="background:{pc}20;color:{pc}">{_e(prob)}</span></td>
+  <td><span class="cell-tag" style="background:{ic}20;color:{ic}">{_e(impact)}</span></td>
+  <td class="cell-desc">{_e(r.get("mitigation",""))}</td>
+</tr>"""
+
+    risk_html = f"""
+<div class="section" id="risks">
+  <div class="section-header"><div class="section-title">Risk Matrix</div></div>
+  <div class="data-table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Risk</th><th>Probability</th><th>Impact</th><th>Mitigation</th></tr></thead>
+      <tbody>{risk_rows}</tbody>
+    </table>
+  </div>
+</div>"""
+
+    # Moat
+    moat_html = ""
+    if moat:
+        moat_html = f"""
+<div class="section">
+  <div class="section-header"><div class="section-title">Competitive Moat</div></div>
+  <div class="exec-box">
+    <div class="exec-text">{_e(moat)}</div>
+  </div>
+</div>"""
+
+    return plan_html + budget_html + risk_html + moat_html
+
+
+def _section_footer(name):
+    return f"""
+<div class="footer">
+  <div class="footer-left">
+    mckoutie & company · Analysis for {_e(name)} · This is a living report — data updates automatically
+  </div>
+  <div class="footer-right">
+    mckoutie.com
+  </div>
+</div>"""
+
+
+# ═══════════════════════════════════════════════
+# JS
+# ═══════════════════════════════════════════════
+def _js():
+    return """
+// Active nav link on scroll
+(function(){
+  var links=document.querySelectorAll('.nav-link');
+  var sections=[];
+  links.forEach(function(l){
+    var id=l.getAttribute('href');
+    if(id&&id.startsWith('#')){
+      var el=document.getElementById(id.slice(1));
+      if(el) sections.push({link:l,el:el});
+    }
+  });
+  function update(){
+    var scrollY=window.scrollY+100;
+    var current=null;
+    sections.forEach(function(s){
+      if(s.el.offsetTop<=scrollY) current=s;
+    });
+    links.forEach(function(l){l.classList.remove('active')});
+    if(current) current.link.classList.add('active');
+  }
+  window.addEventListener('scroll',update,{passive:true});
+  update();
+})();
+"""
+
+
+# ═══════════════════════════════════════════════
+# Helpers
+# ═══════════════════════════════════════════════
+def _tag_class(platform):
+    p = (platform or "").lower()
+    if "twitter" in p or "x" in p:
+        return "tag-twitter"
+    if "linkedin" in p:
+        return "tag-linkedin"
+    if "reddit" in p:
+        return "tag-reddit"
+    if "discord" in p:
+        return "tag-discord"
+    if "github" in p:
+        return "tag-github"
+    if "substack" in p:
+        return "tag-substack"
+    return ""

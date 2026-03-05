@@ -28,6 +28,7 @@ from src.analysis.report_generator import generate_report_html
 from src.analysis.dashboard_renderer import render_dashboard
 from src.analysis.dashboard_v3 import render_dashboard_v3
 from src.analysis.dashboard_v4 import render_dashboard_v4
+from src.analysis.dashboard_v5 import render_dashboard_v5
 
 REPORTS_DIR = Path(__file__).parent.parent / "reports"
 
@@ -843,10 +844,10 @@ async def test_report(request: Request, tier: str = "free"):
 
 
 @app.get("/test2", response_class=HTMLResponse)
-async def test_report_v4(request: Request, tier: str = "free"):
-    """V4 dashboard — formal BI style with spreadsheet tabs. Supports ?tier=free|starter|growth"""
+async def test_report_v5(request: Request, tier: str = "free"):
+    """V5 dashboard — formal BI style, single scroll, spreadsheet tables. Supports ?tier=free|starter|growth"""
     mock = _mock_analysis()
-    html = render_dashboard_v4(
+    html = render_dashboard_v5(
         analysis=mock,
         startup_name="Linear",
         report_id="test-mock-001",
