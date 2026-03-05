@@ -687,20 +687,23 @@ async def run_traction_analysis(startup_data: str) -> dict:
     text = None
 
     # --- Phase 1: Main analysis via Sonnet (fast, reliable) ---
+    # NOTE: VPS proxy always routes to Opus regardless of model requested
+    # (it's a Claude CLI wrapper). Opus is too slow for 32K-token structured analysis.
+    # So we use OpenRouter Sonnet first (fast, ~60-90s), then VPS as fallback.
 
-    # Try VPS proxy first (Claude Code Max — free, fast)
-    if settings.has_vps_proxy:
-        logger.info(f"[PHASE 1] Running traction analysis via VPS proxy (Sonnet: {settings.analysis_model})...")
+    # Try OpenRouter Sonnet first (fast, reliable for large structured output)
+    if text is None and settings.openrouter_api_key:
+        logger.info("[PHASE 1] Running traction analysis via OpenRouter (Sonnet)...")
         try:
-            text = await _call_vps_proxy(
+            text = await _call_openrouter(
                 prompt,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model,
+                model=settings.analysis_model_fallback,
                 max_tokens=settings.analysis_max_tokens,
-                timeout_seconds=420.0,  # 7 min — larger response with deep_dive data
+                timeout_seconds=240.0,
             )
         except RuntimeError as e:
-            logger.warning(f"VPS proxy failed: {e}")
+            logger.warning(f"OpenRouter failed: {e}")
 
     # Try Anthropic direct
     if text is None and settings.anthropic_api_key:
@@ -715,19 +718,19 @@ async def run_traction_analysis(startup_data: str) -> dict:
         except RuntimeError as e:
             logger.warning(f"Anthropic failed: {e}")
 
-    # Fall back to OpenRouter
-    if text is None and settings.openrouter_api_key:
-        logger.info("[PHASE 1] Falling back to OpenRouter (Sonnet)...")
+    # Fall back to VPS proxy (will use Opus — slower but works)
+    if text is None and settings.has_vps_proxy:
+        logger.info("[PHASE 1] Falling back to VPS proxy (Opus via Max plan)...")
         try:
-            text = await _call_openrouter(
+            text = await _call_vps_proxy(
                 prompt,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model_fallback,
+                model=settings.analysis_model,
                 max_tokens=settings.analysis_max_tokens,
-                timeout_seconds=180.0,
+                timeout_seconds=600.0,  # 10 min — Opus is slow for large output
             )
         except RuntimeError as e:
-            logger.error(f"OpenRouter also failed: {e}")
+            logger.error(f"VPS proxy also failed: {e}")
             return {"error": f"All LLM providers failed: {e}"}
 
     if text is None:
