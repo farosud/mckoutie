@@ -249,11 +249,19 @@ class TwitterClient:
         return r.json().get("data")
 
     def reply_thread(self, tweet_id: str, texts: list[str]) -> list[str]:
-        """Post a thread of replies. Returns list of tweet IDs."""
+        """Post a thread of replies with anti-spam delays between tweets."""
+        import random as _random
+
         reply_ids = []
         parent_id = tweet_id
 
-        for text in texts:
+        for i, text in enumerate(texts):
+            # Add jittered delay between tweets (3-6s) to avoid machine-gun posting
+            if i > 0:
+                delay = 3.0 + _random.random() * 3.0
+                logger.debug(f"Thread anti-spam delay: {delay:.1f}s before tweet {i + 1}")
+                time.sleep(delay)
+
             result = self.create_tweet(text, reply_to=parent_id)
             if result:
                 reply_ids.append(result["id"])
