@@ -1550,9 +1550,10 @@ def _streaming_js():
 
   function addChannelRow(ch, idx){
     var chSection = document.getElementById('channels');
-    if(!chSection) return;
+    if(!chSection){ console.error('[mckoutie] addChannelRow: #channels section NOT FOUND in DOM'); return; }
     var tableBody = chSection.querySelector('.data-table tbody');
-    if(!tableBody) return;
+    if(!tableBody){ console.error('[mckoutie] addChannelRow: .data-table tbody NOT FOUND inside #channels'); return; }
+    console.log('[mckoutie] addChannelRow: rendering channel', idx, ch.channel, 'into tbody with', tableBody.children.length, 'existing rows');
 
     // Remove skeleton on first channel
     if(idx === 0){
@@ -1846,17 +1847,26 @@ def _streaming_js():
     var d = JSON.parse(e.data);
     setStatus(d.message||'');
     setThinking(d.detail||'');
+    console.log('[mckoutie] SSE thinking:', d.message);
+  });
+
+  es.addEventListener('open', function(){
+    console.log('[mckoutie] SSE connection opened to:', sseBase+'/report/'+rid+'/stream');
+    sseGotData = true;
   });
 
   es.addEventListener('channel', function(e){
     sseGotData = true;
-    var d = JSON.parse(e.data);
-    var ch = d.channel;
-    if(!ch) return;
-    channels.push(ch);
-    channelCount++;
-    addChannelRow(ch, d.index != null ? d.index : channels.length-1);
-    setStatus('Analyzing channels... ('+channelCount+'/19)');
+    try {
+      var d = JSON.parse(e.data);
+      var ch = d.channel;
+      if(!ch){ console.warn('[mckoutie] channel event missing channel data:', e.data); return; }
+      channels.push(ch);
+      channelCount++;
+      console.log('[mckoutie] Channel received #'+channelCount+':', ch.channel, ch.score);
+      addChannelRow(ch, d.index != null ? d.index : channels.length-1);
+      setStatus('Analyzing channels... ('+channelCount+'/19)');
+    } catch(ex){ console.error('[mckoutie] Error processing channel event:', ex, e.data); }
   });
 
   es.addEventListener('section', function(e){
@@ -1896,11 +1906,14 @@ def _streaming_js():
   });
 
   es.addEventListener('lead', function(e){
-    var d = JSON.parse(e.data);
-    var l = d.lead;
-    if(!l) return;
-    leads.push(l);
-    addLeadRow(l, d.index != null ? d.index : leads.length-1);
+    try {
+      var d = JSON.parse(e.data);
+      var l = d.lead;
+      if(!l){ console.warn('[mckoutie] lead event missing lead data:', e.data); return; }
+      leads.push(l);
+      console.log('[mckoutie] Lead received #'+leads.length+':', l.name, l.score);
+      addLeadRow(l, d.index != null ? d.index : leads.length-1);
+    } catch(ex){ console.error('[mckoutie] Error processing lead event:', ex, e.data); }
   });
 
   es.addEventListener('channel_update', function(e){
@@ -1947,11 +1960,14 @@ def _streaming_js():
   });
 
   es.addEventListener('investor', function(e){
-    var d = JSON.parse(e.data);
-    var inv = d.investor;
-    if(!inv) return;
-    investors.push(inv);
-    addInvestorRow(inv, d.index != null ? d.index : investors.length-1);
+    try {
+      var d = JSON.parse(e.data);
+      var inv = d.investor;
+      if(!inv){ console.warn('[mckoutie] investor event missing data:', e.data); return; }
+      investors.push(inv);
+      console.log('[mckoutie] Investor received #'+investors.length+':', inv.name, inv.type);
+      addInvestorRow(inv, d.index != null ? d.index : investors.length-1);
+    } catch(ex){ console.error('[mckoutie] Error processing investor event:', ex, e.data); }
   });
 
   es.addEventListener('advisor_ready', function(e){

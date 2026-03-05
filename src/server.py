@@ -1291,13 +1291,11 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     # but if someone got past it (or came back with a cookie), always stream.
     should_stream = is_skeleton
 
-    # Start background analysis from page load — SSE will stream from _deep_progress.
-    # This ensures data is available even if SSE connection drops (polling fallback picks it up).
-    if is_skeleton and not is_deep_analysis_running(report_id):
-        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — starting background analysis + SSE will stream")
-        asyncio.create_task(run_deep_analysis_background(report_id))
-    elif is_skeleton:
-        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — analysis already running, SSE will stream")
+    # Do NOT start analysis here — let the SSE endpoint (/report/{id}/stream) start it.
+    # Starting it here causes a race condition: analysis completes before the SSE
+    # connection opens, so the client never sees streaming data.
+    if is_skeleton:
+        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — SSE will start analysis on connect")
 
     # Render the dashboard — with streaming flag for skeleton reports
     # SSE connects DIRECTLY to Railway (bypasses Vercel proxy which kills long-lived connections)
@@ -1378,7 +1376,11 @@ async def stream_deep_analysis(request: Request, report_id: str):
     if not is_deep_analysis_running(report_id):
         logger.info(f"[SSE] Starting background analysis for {report_id}")
         asyncio.create_task(run_deep_analysis_background(report_id))
-        await asyncio.sleep(0.3)  # Give it a moment to start
+        # Wait for the progress dict to be initialized before streaming
+        for _ in range(20):  # up to 2s
+            await asyncio.sleep(0.1)
+            if get_deep_progress(report_id):
+                break
     else:
         logger.info(f"[SSE] Analysis already running for {report_id}, streaming progress")
 

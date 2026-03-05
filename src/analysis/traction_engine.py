@@ -742,25 +742,38 @@ async def _generate_deep_dives(startup_data: str, analysis: dict, channels_batch
             text = await _call_vps_proxy(
                 prompt,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="claude-haiku-4",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=8000,
                 timeout_seconds=90.0,
             )
         except RuntimeError as e:
             logger.warning(f"VPS proxy failed for deep dives: {e}")
 
-    # FALLBACK: OpenRouter Haiku
+    # FALLBACK 1: OpenRouter Haiku
     if text is None and settings.openrouter_api_key:
         try:
             text = await _call_openrouter(
                 prompt,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="anthropic/claude-haiku-4",
+                model="anthropic/claude-3-5-haiku-20241022",
                 max_tokens=8000,
                 timeout_seconds=90.0,
             )
         except RuntimeError as e:
-            logger.warning(f"OpenRouter failed for deep dives: {e}")
+            logger.warning(f"OpenRouter Haiku failed for deep dives: {e}")
+
+    # FALLBACK 2: OpenRouter Gemini Flash (cheap, always has credits)
+    if text is None and settings.openrouter_api_key:
+        try:
+            text = await _call_openrouter(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="google/gemini-2.5-flash",
+                max_tokens=8000,
+                timeout_seconds=90.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter Gemini Flash failed for deep dives: {e}")
 
     if text is None:
         return {}
@@ -838,7 +851,21 @@ async def run_quick_analysis(startup_data: str) -> dict:
                 timeout_seconds=90.0,
             )
         except RuntimeError as e:
-            logger.warning(f"[QUICK] OpenRouter also failed: {e}")
+            logger.warning(f"[QUICK] OpenRouter Haiku failed: {e}")
+
+    # Fallback to Gemini Flash (cheap, always has credits)
+    if text is None and settings.openrouter_api_key:
+        logger.info("[QUICK] Falling back to OpenRouter (Gemini Flash)...")
+        try:
+            text = await _call_openrouter(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="google/gemini-2.5-flash",
+                max_tokens=2000,
+                timeout_seconds=60.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"[QUICK] OpenRouter Gemini Flash failed: {e}")
 
     # Last resort: Anthropic direct
     if text is None and settings.anthropic_api_key:
@@ -870,16 +897,16 @@ async def run_core_analysis(startup_data: str) -> dict:
     prompt = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
     text = None
 
-    # PRIMARY: VPS proxy Haiku (free, fast ~10-20s)
+    # PRIMARY: VPS proxy Sonnet (free, reliable — Haiku times out on big prompts)
     if settings.has_vps_proxy:
-        logger.info("[PHASE A] Running core analysis via VPS proxy (Haiku — fast scoring)...")
+        logger.info("[PHASE A] Running core analysis via VPS proxy (Sonnet)...")
         try:
             text = await _call_vps_proxy(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="claude-haiku-4", max_tokens=8000, timeout_seconds=120.0,
+                model="claude-sonnet-4", max_tokens=8000, timeout_seconds=180.0,
             )
         except RuntimeError as e:
-            logger.warning(f"VPS proxy Haiku failed for Phase A: {e}")
+            logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
 
     # FALLBACK 1: OpenRouter Haiku (cheap, fast)
     if text is None and settings.openrouter_api_key:
@@ -887,7 +914,7 @@ async def run_core_analysis(startup_data: str) -> dict:
         try:
             text = await _call_openrouter(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="anthropic/claude-haiku-4", max_tokens=8000, timeout_seconds=90.0,
+                model="anthropic/claude-3-5-haiku-20241022", max_tokens=8000, timeout_seconds=90.0,
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Haiku failed for Phase A: {e}")
@@ -902,6 +929,17 @@ async def run_core_analysis(startup_data: str) -> dict:
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Sonnet failed for Phase A: {e}")
+
+    # FALLBACK 3: OpenRouter Gemini Flash (cheap, fast, always has credits)
+    if text is None and settings.openrouter_api_key:
+        logger.info("[PHASE A] Falling back to OpenRouter (Gemini Flash)...")
+        try:
+            text = await _call_openrouter(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="google/gemini-2.5-flash", max_tokens=8000, timeout_seconds=120.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter Gemini Flash failed for Phase A: {e}")
 
     # LAST RESORT: Anthropic direct
     if text is None and settings.anthropic_api_key:

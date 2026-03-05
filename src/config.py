@@ -56,10 +56,11 @@ class Settings(BaseSettings):
     analysis_model_fallback: str = "anthropic/claude-sonnet-4"  # Sonnet on OpenRouter fallback
     hot_take_model: str = "claude-opus-4"  # Opus on VPS — hot take synthesis only (short, high-value)
     hot_take_model_fallback: str = "anthropic/claude-opus-4"  # Opus on OpenRouter fallback
-    persona_model: str = "claude-haiku-4"  # Haiku on VPS — fast persona/lead/investor generation
-    persona_model_fallback: str = "anthropic/claude-haiku-4"  # Haiku on OpenRouter fallback
-    update_model: str = "claude-haiku-4"  # Haiku on VPS — market updates (delta analysis)
-    update_model_fallback: str = "anthropic/claude-haiku-4-5"  # Haiku on OpenRouter fallback
+    persona_model: str = "claude-haiku-4-5-20251001"  # Haiku on VPS — fast persona/lead/investor generation
+    persona_model_fallback: str = "anthropic/claude-3-5-haiku-20241022"  # Haiku on OpenRouter fallback
+    persona_model_fallback2: str = "google/gemini-2.5-flash"  # Gemini Flash — cheap + reliable
+    update_model: str = "claude-haiku-4-5-20251001"  # Haiku on VPS — market updates (delta analysis)
+    update_model_fallback: str = "anthropic/claude-3-5-haiku-20241022"  # Haiku on OpenRouter fallback
     analysis_max_tokens: int = 32000
     hot_take_max_tokens: int = 2000  # Opus hot take is short — keep it fast
 
