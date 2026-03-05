@@ -57,6 +57,9 @@ MAX_PROCESSED_CACHE = 5000
 # Track reports currently running deep analysis to prevent duplicates
 _deep_analysis_in_progress: set[str] = set()
 
+# Track deep analysis progress for polling (report_id -> progress dict)
+_deep_progress: dict[str, dict] = {}
+
 # --- Anti-spam state ---
 # Per-user cooldown: {author_id: last_processed_timestamp}
 _user_cooldowns: dict[str, float] = {}
@@ -327,7 +330,8 @@ async def run_deep_analysis(report_id: str):
     try:
         # Load skeleton report
         from pathlib import Path
-        reports_dir = Path(__file__).parent.parent / "reports"
+        _data_dir = Path("/data")
+        reports_dir = _data_dir / "reports" if _data_dir.is_dir() else Path(__file__).parent.parent / "reports"
         analysis_path = reports_dir / report_id / "analysis.json"
 
         if not analysis_path.exists():
@@ -493,6 +497,45 @@ async def run_deep_analysis(report_id: str):
 def is_deep_analysis_running(report_id: str) -> bool:
     """Check if deep analysis is currently in progress for a report."""
     return report_id in _deep_analysis_in_progress
+
+
+def get_deep_progress(report_id: str) -> dict:
+    """Get the current progress of a deep analysis for polling."""
+    return _deep_progress.get(report_id, {})
+
+
+async def run_deep_analysis_background(report_id: str):
+    """
+    Run deep analysis as a background task (no SSE).
+    Updates _deep_progress dict so clients can poll for status.
+    """
+    _deep_progress[report_id] = {"status": "starting", "sections": {}}
+
+    try:
+        async for event in run_deep_analysis(report_id):
+            ev_type = event.get("event", "")
+            ev_data = event.get("data", {})
+
+            if ev_type == "status":
+                _deep_progress[report_id]["status"] = ev_data.get("message", "working")
+            elif ev_type == "section":
+                section = ev_data.get("section", "")
+                payload = ev_data.get("payload", {})
+                _deep_progress[report_id]["sections"][section] = payload
+                _deep_progress[report_id]["status"] = f"{section}_complete"
+            elif ev_type == "done":
+                _deep_progress[report_id]["status"] = "complete"
+            elif ev_type == "error":
+                _deep_progress[report_id]["status"] = "error"
+                _deep_progress[report_id]["error"] = ev_data.get("message", "Unknown error")
+            elif ev_type == "already_complete":
+                _deep_progress[report_id]["status"] = "complete"
+            elif ev_type == "already_running":
+                pass  # keep current status
+    except Exception as e:
+        logger.error(f"Background deep analysis failed for {report_id}: {e}", exc_info=True)
+        _deep_progress[report_id]["status"] = "error"
+        _deep_progress[report_id]["error"] = str(e)
 
 
 # =============================================================================

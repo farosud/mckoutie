@@ -1733,94 +1733,113 @@ def _streaming_js():
   }
 
 
-  // ---------- SSE CONNECTION ----------
+  // ---------- TRIGGER + POLL ----------
 
-  setStatus('Connecting to deep analysis engine...');
+  setStatus('Starting deep analysis...');
   setPip('channels','active');
 
-  var src = new EventSource('/report/'+rid+'/stream');
+  var seen = {};  // track which sections we've rendered
 
-  src.addEventListener('status', function(e){
-    var d = JSON.parse(e.data);
-    setStatus(d.message||'Working...');
-  });
-
-  src.addEventListener('section', function(e){
-    var d = JSON.parse(e.data);
-    var section = d.section;
-    var payload = d.payload;
-
-    if(section==='channels'){
-      setPip('channels','done');
-      setPip('leads','active');
-      setStatus('Channels analyzed. Searching for leads and investors...');
-      buildChannelsTable(
-        payload.channel_analysis||[],
-        payload.bullseye_ranking||{},
-        payload.executive_summary||'',
-        payload.hot_take||'',
-        payload.company_profile||{}
-      );
-    }
-    else if(section==='leads'){
-      setPip('leads','done');
-      setStatus('Leads found. Discovering investors...');
-      buildLeads(payload);
-    }
-    else if(section==='investors'){
-      setPip('investors','done');
-      setPip('strategy','active');
-      setStatus('Investors mapped. Finalizing strategy...');
-      buildInvestors(payload);
-    }
-    else if(section==='strategy'){
-      setPip('strategy','done');
-      setStatus('Strategy complete.');
-      buildStrategy(payload);
-    }
-  });
-
-  src.addEventListener('done', function(e){
-    pips.forEach(function(p){ p.style.background='#00ff88'; p.style.animation='none'; });
-    setStatus('Analysis complete — your full report is ready.');
-    setTimeout(function(){
-      if(banner){
-        banner.style.transition='all 0.5s ease';
-        banner.style.borderColor='#00ff88';
-        banner.querySelector('div').style.background = '#00ff88';
-        var dot = banner.querySelector('[style*="animation:pulse-dot"]');
-        if(dot){ dot.style.background='#00ff88'; dot.style.animation='none'; }
+  // Trigger the analysis
+  fetch('/report/'+rid+'/stream')
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if(d.status==='already_running'){
+        setStatus('Analysis already running — checking progress...');
+      } else {
+        setStatus('Analyzing 19 growth channels...');
       }
-    }, 500);
-    // Fade out banner after 5 seconds
-    setTimeout(function(){
-      if(banner){
-        banner.style.opacity='0';
-        setTimeout(function(){ banner.style.display='none'; document.body.style.paddingTop=''; }, 500);
-      }
-    }, 5000);
-    src.close();
-  });
+      // Start polling
+      pollProgress();
+    })
+    .catch(function(e){
+      setStatus('Failed to start analysis. Try refreshing.');
+      pips.forEach(function(p){ p.style.background='#ff4444'; });
+    });
 
-  src.addEventListener('already_complete', function(e){
-    if(banner){ banner.style.display='none'; document.body.style.paddingTop=''; }
-    src.close();
-  });
+  function pollProgress(){
+    fetch('/report/'+rid+'/progress')
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        var status = d.status||'';
+        var sections = d.sections||{};
 
-  src.addEventListener('already_running', function(e){
-    setStatus('Deep analysis is already running — waiting for results...');
-  });
+        // Update status message
+        if(status.indexOf('channel')>=0 && !seen.channels){
+          setStatus('Analyzing growth channels...');
+        }
 
-  src.addEventListener('error', function(e){
-    setStatus('Analysis hit a snag. Refreshing may help.');
-    pips.forEach(function(p){ p.style.background='#ff4444'; });
-    setTimeout(function(){ src.close(); }, 1000);
-  });
+        // Render sections as they arrive
+        if(sections.channels && !seen.channels){
+          seen.channels = true;
+          setPip('channels','done');
+          setPip('leads','active');
+          setStatus('Channels analyzed. Searching for leads and investors...');
+          var ch = sections.channels;
+          buildChannelsTable(
+            ch.channel_analysis||[],
+            ch.bullseye_ranking||{},
+            ch.executive_summary||'',
+            ch.hot_take||'',
+            ch.company_profile||{}
+          );
+        }
+        if(sections.leads && !seen.leads){
+          seen.leads = true;
+          setPip('leads','done');
+          setStatus('Leads found. Discovering investors...');
+          buildLeads(sections.leads);
+        }
+        if(sections.investors && !seen.investors){
+          seen.investors = true;
+          setPip('investors','done');
+          setPip('strategy','active');
+          setStatus('Investors mapped. Finalizing strategy...');
+          buildInvestors(sections.investors);
+        }
+        if(sections.strategy && !seen.strategy){
+          seen.strategy = true;
+          setPip('strategy','done');
+          setStatus('Strategy complete.');
+          buildStrategy(sections.strategy);
+        }
 
-  src.onerror = function(){
-    setStatus('Connection lost. Refresh to check progress.');
-    src.close();
-  };
+        // Check completion
+        if(status==='complete'){
+          pips.forEach(function(p){ p.style.background='#00ff88'; p.style.animation='none'; });
+          setStatus('Analysis complete — your full report is ready.');
+          setTimeout(function(){
+            if(banner){
+              banner.style.transition='all 0.5s ease';
+              banner.style.borderColor='#00ff88';
+              banner.querySelector('div').style.background = '#00ff88';
+              var dot = banner.querySelector('[style*="animation:pulse-dot"]');
+              if(dot){ dot.style.background='#00ff88'; dot.style.animation='none'; }
+            }
+          }, 500);
+          setTimeout(function(){
+            if(banner){
+              banner.style.opacity='0';
+              setTimeout(function(){ banner.style.display='none'; document.body.style.paddingTop=''; }, 500);
+            }
+          }, 5000);
+          return; // stop polling
+        }
+
+        if(status==='error'){
+          setStatus('Analysis hit a snag: '+(d.error||'unknown error')+'. Try refreshing.');
+          pips.forEach(function(p){ p.style.background='#ff4444'; });
+          return; // stop polling
+        }
+
+        // Keep polling every 3 seconds
+        setTimeout(pollProgress, 3000);
+      })
+      .catch(function(e){
+        // Network error — retry in 5 seconds
+        setTimeout(pollProgress, 5000);
+      });
+  }
 })();
 """
 

@@ -32,7 +32,7 @@ from src.analysis.dashboard_renderer import render_dashboard
 from src.analysis.dashboard_v3 import render_dashboard_v3
 from src.analysis.dashboard_v4 import render_dashboard_v4
 from src.analysis.dashboard_v5 import render_dashboard_v5
-from src.orchestrator import run_deep_analysis, is_deep_analysis_running
+from src.orchestrator import run_deep_analysis, is_deep_analysis_running, run_deep_analysis_background, get_deep_progress
 
 # Use Railway persistent volume if available, else local
 _data_dir = Path("/data")
@@ -1282,11 +1282,11 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
 
 
 @app.get("/report/{report_id}/stream")
-async def stream_deep_analysis(request: Request, report_id: str):
-    """SSE endpoint — streams deep analysis results as they complete.
+async def trigger_deep_analysis(request: Request, report_id: str):
+    """Trigger deep analysis in background.
 
     Called by the dashboard JS when a skeleton report is loaded.
-    Triggers Phase 2 (full 19-channel analysis + leads + investors).
+    Returns immediately — client polls /report/{id}/progress for updates.
     """
     record = report_store.load_record(report_id)
     if not record:
@@ -1298,23 +1298,60 @@ async def stream_deep_analysis(request: Request, report_id: str):
     if not user:
         return JSONResponse({"error": "Login required"}, status_code=401)
 
-    async def event_generator():
-        try:
-            async for event in run_deep_analysis(report_id):
-                if await request.is_disconnected():
-                    break
-                yield {
-                    "event": event.get("event", "message"),
-                    "data": json.dumps(event.get("data", {})),
-                }
-        except Exception as e:
-            logger.error(f"SSE stream error for {report_id}: {e}")
-            yield {
-                "event": "error",
-                "data": json.dumps({"message": str(e)}),
-            }
+    if is_deep_analysis_running(report_id):
+        return JSONResponse({"status": "already_running"})
 
-    return EventSourceResponse(event_generator())
+    # Fire and forget — run analysis in background
+    asyncio.create_task(run_deep_analysis_background(report_id))
+    return JSONResponse({"status": "started"})
+
+
+@app.get("/report/{report_id}/progress")
+async def poll_deep_progress(request: Request, report_id: str):
+    """Poll endpoint for deep analysis progress.
+
+    Returns current progress including completed sections.
+    Client polls every 3 seconds until status is 'complete' or 'error'.
+    """
+    # Check if analysis is complete (full report exists)
+    analysis_path = REPORTS_DIR / report_id / "analysis.json"
+    if analysis_path.exists():
+        try:
+            analysis = json.loads(analysis_path.read_text())
+            if analysis.get("_phase") == "complete":
+                return JSONResponse({
+                    "status": "complete",
+                    "sections": {
+                        "channels": {
+                            "channel_analysis": analysis.get("channel_analysis", []),
+                            "bullseye_ranking": analysis.get("bullseye_ranking", {}),
+                            "executive_summary": analysis.get("executive_summary", ""),
+                            "hot_take": analysis.get("hot_take", ""),
+                            "company_profile": analysis.get("company_profile", {}),
+                        },
+                        "leads": analysis.get("leads_research", {}),
+                        "investors": analysis.get("investor_research", {}),
+                        "strategy": {
+                            "ninety_day_plan": analysis.get("ninety_day_plan", {}),
+                            "budget_allocation": analysis.get("budget_allocation", {}),
+                            "risk_matrix": analysis.get("risk_matrix", []),
+                            "competitive_moat": analysis.get("competitive_moat", ""),
+                        },
+                    },
+                })
+        except Exception:
+            pass
+
+    # Check in-memory progress
+    progress = get_deep_progress(report_id)
+    if progress:
+        return JSONResponse(progress)
+
+    # Not started yet
+    if is_deep_analysis_running(report_id):
+        return JSONResponse({"status": "running", "sections": {}})
+
+    return JSONResponse({"status": "not_started", "sections": {}})
 
 
 @app.post("/webhook/stripe")
