@@ -100,7 +100,18 @@ Return valid JSON with this structure:
       "specific_ideas": ["3-5 SPECIFIC tactical ideas for THIS startup"],
       "first_move": "string — the very first concrete action to take",
       "why_or_why_not": "string — honest assessment of why this channel does or doesn't fit",
-      "killer_insight": "string — one non-obvious insight about using this channel for THIS startup"
+      "killer_insight": "string — one non-obvious insight about using this channel for THIS startup",
+      "deep_dive": {{
+        "research_type": "string — one of: communities | content_topics | keywords | conferences | journalists | influencers | newsletters | email_sequences | free_tools | stunts | partners | sales_targets | outreach | platforms | community_platforms | affiliates | general",
+        "actions": [
+          {{
+            "title": "string — action name",
+            "description": "string — detailed 2-3 sentence description of what to do",
+            "expected_result": "string — specific measurable outcome expected"
+          }}
+        ],
+        "research": ["array of research items — structure depends on research_type, see mapping below"]
+      }}
     }}
   ],
 
@@ -162,6 +173,33 @@ Return valid JSON with this structure:
 Analyze ALL 19 channels in channel_analysis. Score each honestly — some should be 1-2 (bad fit).
 The bullseye_ranking must have exactly 3 in inner_ring.
 Be specific enough that they can execute on day 1 without further research.
+
+IMPORTANT — deep_dive per channel:
+Each channel MUST include a "deep_dive" object with 3 actions and 5-7 research items.
+Use this research_type mapping per channel:
+  - Viral Marketing → "communities" (communities where viral sharing happens)
+  - Public Relations (PR) → "journalists" (with name, outlet, beat, recent_article, twitter, relevance)
+  - Unconventional PR → "stunts" (with name, budget, virality, risk, description)
+  - Search Engine Marketing (SEM) → "keywords" (with keyword, volume, cpc, competition, strategy)
+  - Social & Display Ads → "platforms" (with name, type, audience, strategy)
+  - Offline Ads → "platforms" (billboard/OOH platforms with name, type, audience, strategy)
+  - Search Engine Optimization (SEO) → "keywords" (with keyword, volume, cpc, competition, strategy)
+  - Content Marketing → "content_topics" (with name, volume, difficulty, format, angle)
+  - Email Marketing → "email_sequences" (with name, subject, timing, goal)
+  - Engineering as Marketing → "free_tools" (with name, effort, viral_potential, conversion)
+  - Targeting Blogs → "newsletters" (with name, audience, frequency, contact, angle)
+  - Business Development → "partners" (with name, type, audience, fit)
+  - Sales → "sales_targets" (with name, title, reason, approach)
+  - Affiliate Programs → "affiliates" (with name, platform, audience, type, commission, url)
+  - Existing Platforms → "platforms" (with name, type, audience, strategy)
+  - Trade Shows → "conferences" (with name, date, location, cost, audience, fit)
+  - Offline Events → "conferences" (with name, date, location, cost, audience, fit — events to host or attend)
+  - Speaking Engagements → "conferences" (with name, date, location, cost, audience, fit — speaking opportunities)
+  - Community Building → "community_platforms" (with name, cost, pros, cons)
+
+For research items: use REAL names and data when possible. Real conferences, real publications,
+real communities, real keywords. Make it actionable — the user should be able to Google
+every item you mention and find it.
 
 NOTE: Do NOT include a "hot_take" field — that will be generated separately by a different model.
 """
@@ -569,7 +607,7 @@ async def run_traction_analysis(startup_data: str) -> dict:
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
                 model=settings.analysis_model,
                 max_tokens=settings.analysis_max_tokens,
-                timeout_seconds=240.0,  # Sonnet is fast — 4 min is generous
+                timeout_seconds=420.0,  # 7 min — larger response with deep_dive data
             )
         except RuntimeError as e:
             logger.warning(f"VPS proxy failed: {e}")

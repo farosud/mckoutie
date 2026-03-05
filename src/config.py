@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     persona_model_fallback: str = "anthropic/claude-sonnet-4"  # Sonnet on OpenRouter fallback
     update_model: str = "claude-haiku-4-5-20251001"  # Haiku on VPS — market updates (delta analysis)
     update_model_fallback: str = "anthropic/claude-haiku-4-5"  # Haiku on OpenRouter fallback
-    analysis_max_tokens: int = 12000
+    analysis_max_tokens: int = 32000
     hot_take_max_tokens: int = 2000  # Opus hot take is short — keep it fast
 
     # Stripe price IDs (created on first checkout if empty)
