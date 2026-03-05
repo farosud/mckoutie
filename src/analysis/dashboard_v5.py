@@ -122,10 +122,10 @@ body { padding-top: 48px !important; }
     {_section_kpis(top_score, top_channel, avg_score, len(leads), len(all_investors), len(competitors))}
     {_section_executive(exec_summary, hot_take)}
     {_section_bullseye(inner, promising, sorted_ch)}
-    {_section_channels(sorted_ch, tier, streaming)}
-    {_section_leads(leads, personas, tier, checkout_url, date_short, streaming)}
-    {_section_investors(competitors, comp_investors, mkt_investors, tier, upgrade_url, date_short, streaming)}
-    {_section_strategy(plan, budget, risks, moat, tier, checkout_url, streaming)}
+    {_section_channels(sorted_ch, tier)}
+    {_section_leads(leads, personas, tier, checkout_url, date_short)}
+    {_section_investors(competitors, comp_investors, mkt_investors, tier, upgrade_url, date_short)}
+    {_section_strategy(plan, budget, risks, moat, tier, checkout_url)}
     {_section_footer(startup_name)}
   </main>
 </div>
