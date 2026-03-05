@@ -34,9 +34,14 @@ _LLM_TIMEOUT = httpx.Timeout(300.0, connect=15.0)
 _PERSONA_MODEL_FALLBACK = "google/gemini-2.5-flash"
 
 
-async def find_leads(startup_data: str, analysis: dict) -> dict:
+async def find_leads(startup_data: str, analysis: dict, on_progress=None) -> dict:
     """
     Generate personas and find real potential leads for a startup.
+
+    Args:
+        on_progress: Optional async callback(event_type, data) for streaming updates.
+            event_type: "thinking", "persona_ready", "lead_found", "query_start"
+            data: dict with message/detail or actual persona/lead data
 
     Returns dict with "personas" and "leads" keys (always populated, possibly empty).
     This function NEVER raises — all errors are caught and logged.
@@ -46,11 +51,20 @@ async def find_leads(startup_data: str, analysis: dict) -> dict:
     one_liner = profile.get("one_liner", "")
     name = profile.get("name", "")
 
+    async def _emit(event_type, data):
+        if on_progress:
+            try:
+                await on_progress(event_type, data)
+            except Exception:
+                pass
+
     logger.info(
         f"[LEADS] Starting lead finder for '{name or 'unknown startup'}' "
         f"| market='{market[:60]}' | one_liner='{one_liner[:60]}' "
         f"| exa_key_starts={settings.exa_api_key[:8] if settings.exa_api_key else 'MISSING'}..."
     )
+
+    await _emit("thinking", {"message": "Generating customer personas...", "detail": f"Building 3 ideal customer profiles for {name or 'this startup'}"})
 
     # Phase 1: Generate personas via LLM
     personas = []
@@ -63,8 +77,13 @@ async def find_leads(startup_data: str, analysis: dict) -> dict:
     # Phase 1b: Fallback — if LLM failed, build simple personas from company profile
     if not personas:
         logger.warning("[LEADS] LLM personas empty — building fallback personas from profile")
+        await _emit("thinking", {"message": "Building fallback personas from profile...", "detail": "LLM persona generation timed out — using profile data"})
         personas = _build_fallback_personas(profile, market, one_liner)
         logger.info(f"[LEADS] Built {len(personas)} fallback personas")
+
+    # Emit each persona as it's ready
+    for i, p in enumerate(personas):
+        await _emit("persona_ready", {"index": i, "persona": p})
 
     # Phase 2: Find real leads via Exa
     leads = []
@@ -74,7 +93,8 @@ async def find_leads(startup_data: str, analysis: dict) -> dict:
         logger.warning("[LEADS] No personas generated — skipping lead search")
     else:
         try:
-            leads = await _find_leads_via_exa(name, one_liner, market, personas)
+            await _emit("thinking", {"message": "Searching for potential customers...", "detail": f"Running {min(len(personas), 3) * 2} targeted searches across the web"})
+            leads = await _find_leads_via_exa(name, one_liner, market, personas, on_lead_found=_emit)
         except Exception as e:
             logger.error(f"[LEADS] Exa lead search failed entirely: {e}", exc_info=True)
 
@@ -244,15 +264,20 @@ async def _find_leads_via_exa(
     one_liner: str,
     market: str,
     personas: list[dict],
+    on_lead_found=None,
 ) -> list[dict]:
-    """Search Exa for real people matching the personas — throttled parallel."""
+    """Search Exa for real people matching the personas — throttled parallel.
+
+    Emits progress events via on_lead_found callback as leads are discovered.
+    """
     t0 = _time.monotonic()
     leads = []
     seen_urls = set()
 
     # Build all search tasks upfront
     tasks = []
-    task_meta = []  # track which persona each task belongs to
+    task_meta = []  # track which persona + query each task belongs to
+    task_queries = []  # track actual query text
 
     for persona in personas[:3]:
         queries = persona.get("search_queries", [])
@@ -276,14 +301,25 @@ async def _find_leads_via_exa(
             logger.info(f"[LEADS] Queuing Exa search for persona '{persona.get('name', '?')}': {clean_query[:80]}")
             tasks.append(_exa_search_throttled(query=clean_query, num_results=5))
             task_meta.append(persona)
+            task_queries.append(clean_query)
 
     logger.info(f"[LEADS] Launching {len(tasks)} Exa searches (max 3 concurrent)")
+
+    # Emit query start events
+    if on_lead_found:
+        for i, q in enumerate(task_queries):
+            persona_name = task_meta[i].get("name", "Customer")
+            await on_lead_found("thinking", {
+                "message": f"Searching for '{persona_name}' personas...",
+                "detail": f"Exa query: \"{q[:80]}\"",
+            })
 
     # Run all searches concurrently (semaphore limits actual concurrency)
     results_list = await asyncio.gather(*tasks, return_exceptions=True)
 
     success_count = 0
     fail_count = 0
+    lead_idx = 0
     for i, result in enumerate(results_list):
         persona = task_meta[i]
         if isinstance(result, Exception):
@@ -299,6 +335,13 @@ async def _find_leads_via_exa(
             lead = _extract_lead_info(r, persona)
             if lead:
                 leads.append(lead)
+                # Emit each lead as it's found
+                if on_lead_found:
+                    await on_lead_found("lead_found", {
+                        "index": lead_idx,
+                        "lead": lead,
+                    })
+                    lead_idx += 1
 
     elapsed = _time.monotonic() - t0
     logger.info(

@@ -314,11 +314,17 @@ async def run_deep_analysis(report_id: str):
     Run the FULL deep analysis for a report. Called when user first visits the report page.
     Streams results via SSE — each section is yielded as it completes.
 
-    This is an async generator that yields SSE events:
-      {"event": "section", "data": {"section": "channels", "payload": {...}}}
-      {"event": "section", "data": {"section": "leads", "payload": {...}}}
-      {"event": "section", "data": {"section": "investors", "payload": {...}}}
-      {"event": "done", "data": {}}
+    Events emitted:
+      {"event": "thinking",  "data": {"message": "...", "detail": "..."}}
+      {"event": "channel",   "data": {"index": 0, "channel": {...}}}       # per-channel
+      {"event": "section",   "data": {"section": "channels_meta", ...}}     # bullseye/summary
+      {"event": "persona",   "data": {"index": 0, "persona": {...}}}       # per-persona
+      {"event": "lead",      "data": {"index": 0, "lead": {...}}}          # per-lead
+      {"event": "competitor", "data": {"index": 0, "competitor": {...}}}    # per-competitor
+      {"event": "investor",  "data": {"index": 0, "investor": {...}}}      # per-investor
+      {"event": "section",   "data": {"section": "strategy", ...}}
+      {"event": "advisor_ready", "data": {}}
+      {"event": "done",      "data": {}}
     """
     if report_id in _deep_analysis_in_progress:
         logger.info(f"Deep analysis already running for {report_id}, skipping duplicate")
@@ -358,10 +364,10 @@ async def run_deep_analysis(report_id: str):
         startup_name = record.startup_name if record else skeleton.get("company_profile", {}).get("name", "Unknown")
 
         update_status(report_id, "deep_analyzing")
-        yield {"event": "status", "data": {"message": "Starting deep analysis..."}}
+        yield {"event": "thinking", "data": {"message": "Initializing deep analysis engine...", "detail": f"Preparing to analyze {startup_name}"}}
 
         # --- Run full 19-channel analysis ---
-        yield {"event": "status", "data": {"message": "Analyzing 19 growth channels..."}}
+        yield {"event": "thinking", "data": {"message": "Analyzing 19 growth channels...", "detail": "Running full traction framework analysis via AI"}}
 
         analysis = await run_traction_analysis(startup_data)
 
@@ -373,30 +379,68 @@ async def run_deep_analysis(report_id: str):
         if not analysis.get("company_profile"):
             analysis["company_profile"] = skeleton.get("company_profile", {})
 
-        # Stream the channels as they're ready
-        yield {
-            "event": "section",
-            "data": {
-                "section": "channels",
-                "payload": {
-                    "channel_analysis": analysis.get("channel_analysis", []),
-                    "bullseye_ranking": analysis.get("bullseye_ranking", {}),
-                    "executive_summary": analysis.get("executive_summary", ""),
-                    "hot_take": analysis.get("hot_take", ""),
-                    "company_profile": analysis.get("company_profile", {}),
-                },
+        # Stream channels one by one
+        channels = analysis.get("channel_analysis", [])
+        sorted_channels = sorted(channels, key=lambda c: c.get("score", 0), reverse=True)
+        for i, ch in enumerate(sorted_channels):
+            yield {"event": "thinking", "data": {"message": f"Analyzed: {ch.get('channel', 'Channel')}", "detail": f"Score: {ch.get('score', 0)}/10 — {ch.get('killer_insight', '')[:80]}"}}
+            yield {"event": "channel", "data": {"index": i, "channel": ch}}
+            # Small delay for visual effect
+            await asyncio.sleep(0.15)
+
+        # Stream channels metadata (bullseye, summary, hot take)
+        yield {"event": "section", "data": {
+            "section": "channels_meta",
+            "payload": {
+                "bullseye_ranking": analysis.get("bullseye_ranking", {}),
+                "executive_summary": analysis.get("executive_summary", ""),
+                "hot_take": analysis.get("hot_take", ""),
+                "company_profile": analysis.get("company_profile", {}),
             },
-        }
+        }}
 
-        yield {"event": "status", "data": {"message": "Channels complete. Searching for leads and investors..."}}
+        yield {"event": "thinking", "data": {"message": "Channels complete. Searching for potential customers...", "detail": "Generating customer personas and searching Exa.ai for real leads"}}
 
-        # --- Run leads + investors in parallel ---
+        # --- Run leads + investors with streaming callbacks ---
         leads_data = {}
         investors_data = {}
 
+        # Queues for streaming events from lead/investor finders back to SSE
+        _event_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _leads_progress(event_type, data):
+            """Callback from lead_finder — pushes events to the SSE queue."""
+            if event_type == "thinking":
+                await _event_queue.put({"event": "thinking", "data": data})
+            elif event_type == "persona_ready":
+                p = data.get("persona", {})
+                platforms = p.get("platforms", p.get("social_networks", {}).get("primary", []))
+                await _event_queue.put({"event": "thinking", "data": {"message": f"Built persona: {p.get('name', 'Customer')}", "detail": f"Platforms: {', '.join(platforms[:3])}"}})
+                await _event_queue.put({"event": "persona", "data": data})
+            elif event_type == "lead_found":
+                l = data.get("lead", {})
+                await _event_queue.put({"event": "thinking", "data": {"message": f"Found lead: {l.get('name', 'Someone')}", "detail": f"{l.get('platform', '')} — Score: {l.get('score', 0)}/10"}})
+                await _event_queue.put({"event": "lead", "data": data})
+
+        async def _investors_progress(event_type, data):
+            """Callback from investor_finder — pushes events to the SSE queue."""
+            if event_type == "thinking":
+                await _event_queue.put({"event": "thinking", "data": data})
+            elif event_type == "competitor_found":
+                c = data.get("competitor", {})
+                await _event_queue.put({"event": "thinking", "data": {"message": f"Found competitor: {c.get('name', 'Company')}", "detail": f"Funding: {c.get('funding', 'Unknown')}"}})
+                await _event_queue.put({"event": "competitor", "data": data})
+            elif event_type == "investor_found":
+                inv = data.get("investor", {})
+                await _event_queue.put({"event": "thinking", "data": {"message": f"Discovered investor: {inv.get('name', 'Investor')}", "detail": f"{inv.get('type', inv.get('title', ''))} — {inv.get('focus', inv.get('thesis', ''))[:60]}"}})
+                await _event_queue.put({"event": "investor", "data": data})
+
         async def _run_leads():
             try:
-                return await asyncio.wait_for(find_leads(startup_data, analysis), timeout=300)
+                return await asyncio.wait_for(
+                    find_leads(startup_data, analysis, on_progress=_leads_progress),
+                    timeout=300,
+                )
             except asyncio.TimeoutError:
                 logger.error(f"[DEEP] Lead research timed out for {report_id}")
                 return {"personas": [], "leads": [], "_error": "timeout"}
@@ -406,7 +450,10 @@ async def run_deep_analysis(report_id: str):
 
         async def _run_investors():
             try:
-                return await asyncio.wait_for(find_investors(startup_data, analysis), timeout=120)
+                return await asyncio.wait_for(
+                    find_investors(startup_data, analysis, on_progress=_investors_progress),
+                    timeout=120,
+                )
             except asyncio.TimeoutError:
                 logger.error(f"[DEEP] Investor research timed out for {report_id}")
                 return {"competitors": [], "competitor_investors": [], "market_investors": [], "_error": "timeout"}
@@ -414,29 +461,37 @@ async def run_deep_analysis(report_id: str):
                 logger.error(f"[DEEP] Investor research failed for {report_id}: {e}")
                 return {"competitors": [], "competitor_investors": [], "market_investors": [], "_error": str(e)}
 
-        leads_result, investors_result = await asyncio.gather(_run_leads(), _run_investors())
-        leads_data = leads_result
-        investors_data = investors_result
+        # Run both in background, drain the event queue as events come in
+        leads_task = asyncio.create_task(_run_leads())
+        investors_task = asyncio.create_task(_run_investors())
 
-        # Stream leads
-        yield {
-            "event": "section",
-            "data": {
-                "section": "leads",
-                "payload": leads_data,
-            },
-        }
+        # Drain events from the queue while research is running
+        while not (leads_task.done() and investors_task.done()):
+            try:
+                event = await asyncio.wait_for(_event_queue.get(), timeout=0.5)
+                yield event
+            except asyncio.TimeoutError:
+                # No events yet, check if tasks are still running
+                continue
 
-        # Stream investors
-        yield {
-            "event": "section",
-            "data": {
-                "section": "investors",
-                "payload": investors_data,
-            },
-        }
+        # Drain any remaining events in the queue
+        while not _event_queue.empty():
+            event = await _event_queue.get()
+            yield event
 
-        yield {"event": "status", "data": {"message": "Research complete. Generating strategy..."}}
+        leads_data = leads_task.result()
+        investors_data = investors_task.result()
+
+        # Emit section-complete markers so client pips update
+        final_leads = leads_data.get("leads", [])
+        final_personas = leads_data.get("personas", [])
+        final_competitors = investors_data.get("competitors", [])
+        final_all_investors = investors_data.get("competitor_investors", []) + investors_data.get("market_investors", [])
+
+        yield {"event": "section", "data": {"section": "leads_complete", "payload": {"count": len(final_leads), "persona_count": len(final_personas)}}}
+        yield {"event": "section", "data": {"section": "investors_complete", "payload": {"count": len(final_all_investors), "competitor_count": len(final_competitors)}}}
+
+        yield {"event": "thinking", "data": {"message": "Research complete. Generating strategy...", "detail": f"Found {len(final_leads)} leads, {len(final_all_investors)} investors, {len(final_competitors)} competitors"}}
 
         # --- Merge everything and save ---
         analysis["leads_research"] = leads_data
@@ -471,6 +526,7 @@ async def run_deep_analysis(report_id: str):
             logger.warning(f"Supabase update failed (non-fatal): {e}")
 
         # Provision advisor agent
+        yield {"event": "thinking", "data": {"message": "Provisioning your AI advisor...", "detail": "Creating a personalized strategy advisor for your startup"}}
         try:
             await _provision_advisor(
                 report_id=report_id,
@@ -480,8 +536,10 @@ async def run_deep_analysis(report_id: str):
                 leads_data=leads_data,
                 investors_data=investors_data,
             )
+            yield {"event": "advisor_ready", "data": {"message": "Your AI strategy advisor is ready. Ask anything about your growth plan."}}
         except Exception as e:
             logger.warning(f"Advisor provisioning failed (non-fatal): {e}")
+            yield {"event": "advisor_ready", "data": {"message": "Advisor setup in progress. Chat may be available shortly.", "partial": True}}
 
         logger.info(f"[PHASE 2] Deep analysis complete for {startup_name} (report={report_id})")
         yield {"event": "done", "data": {}}

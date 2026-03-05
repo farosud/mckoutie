@@ -28,10 +28,14 @@ _EXA_SEMAPHORE = asyncio.Semaphore(3)
 _EXA_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 
-async def find_investors(startup_data: str, analysis: dict) -> dict:
+async def find_investors(startup_data: str, analysis: dict, on_progress=None) -> dict:
     """
     Find relevant investors for a startup by analyzing competitors' funding
     and searching for active investors in the space.
+
+    Args:
+        on_progress: Optional async callback(event_type, data) for streaming updates.
+            event_type: "thinking", "competitor_found", "investor_found"
 
     This function NEVER raises — all errors are caught and logged.
     Returns a dict with competitors, competitor_investors, and market_investors.
@@ -40,6 +44,13 @@ async def find_investors(startup_data: str, analysis: dict) -> dict:
     market = profile.get("market", "")
     name = profile.get("name", "")
     one_liner = profile.get("one_liner", "")
+
+    async def _emit(event_type, data):
+        if on_progress:
+            try:
+                await on_progress(event_type, data)
+            except Exception:
+                pass
 
     result = {
         "competitors": [],
@@ -56,6 +67,8 @@ async def find_investors(startup_data: str, analysis: dict) -> dict:
         f"| market='{market[:60]}' | one_liner='{one_liner[:60]}' "
         f"| exa_key_starts={settings.exa_api_key[:8]}..."
     )
+
+    await _emit("thinking", {"message": "Discovering competitors in your space...", "detail": f"Searching for funded startups in {market or 'your market'}"})
 
     # Run both phases in parallel with independent error handling
     comp_task = _find_competitors(name, one_liner, market)
@@ -77,7 +90,14 @@ async def find_investors(startup_data: str, analysis: dict) -> dict:
         logger.info(f"[INVESTORS] Found {len(competitors)} competitors")
 
     result["competitors"] = competitors
+
+    # Emit each competitor as found
+    for i, comp in enumerate(competitors):
+        await _emit("competitor_found", {"index": i, "competitor": comp})
+
     result["competitor_investors"] = _extract_competitor_investors(competitors)
+
+    await _emit("thinking", {"message": f"Found {len(competitors)} competitors. Mapping investor landscape...", "detail": f"Identified {len(result['competitor_investors'])} investors from competitor funding rounds"})
 
     # Handle market investors
     if isinstance(market_result, Exception):
@@ -88,6 +108,9 @@ async def find_investors(startup_data: str, analysis: dict) -> dict:
     else:
         result["market_investors"] = market_result
         logger.info(f"[INVESTORS] Found {len(market_result)} market investors")
+        # Emit each market investor as found
+        for i, inv in enumerate(market_result):
+            await _emit("investor_found", {"index": i, "investor": inv})
 
     logger.info(
         f"[INVESTORS] Complete — "

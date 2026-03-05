@@ -66,25 +66,37 @@ def render_dashboard_v5(
     position:fixed; top:0; left:0; right:0; z-index:9999;
     background:linear-gradient(90deg,#0d1117,#1a2332,#0d1117);
     border-bottom:2px solid #00d4ff;
-    padding:12px 24px;
-    display:flex; align-items:center; gap:12px;
+    padding:10px 24px;
     font-family:'Inter',sans-serif;
     animation:banner-glow 2s ease-in-out infinite;
 ">
-    <div style="
-        width:12px;height:12px;border-radius:50%;
-        background:#00d4ff;
-        animation:pulse-dot 1.5s ease-in-out infinite;
-    "></div>
-    <span id="streaming-status" style="color:#e0e0e0;font-size:14px;font-weight:500;">
-        Connecting to deep analysis engine...
-    </span>
-    <div style="margin-left:auto;display:flex;gap:8px;" id="streaming-progress">
-        <span class="progress-pip" data-section="channels" style="width:8px;height:8px;border-radius:50%;background:#333;transition:background 0.3s;"></span>
-        <span class="progress-pip" data-section="leads" style="width:8px;height:8px;border-radius:50%;background:#333;transition:background 0.3s;"></span>
-        <span class="progress-pip" data-section="investors" style="width:8px;height:8px;border-radius:50%;background:#333;transition:background 0.3s;"></span>
-        <span class="progress-pip" data-section="strategy" style="width:8px;height:8px;border-radius:50%;background:#333;transition:background 0.3s;"></span>
+    <div style="display:flex;align-items:center;gap:12px;">
+        <div style="
+            width:12px;height:12px;border-radius:50%;
+            background:#00d4ff;
+            animation:pulse-dot 1.5s ease-in-out infinite;
+        "></div>
+        <span id="streaming-status" style="color:#e0e0e0;font-size:13px;font-weight:500;flex:1;">
+            Connecting to deep analysis engine...
+        </span>
+        <div style="display:flex;gap:6px;align-items:center;" id="streaming-progress">
+            <span class="pip-label" style="font-size:10px;color:#666;margin-right:2px;">CH</span>
+            <span class="progress-pip" data-section="channels" style="width:8px;height:8px;border-radius:50%;background:#333;transition:all 0.3s;"></span>
+            <span class="pip-label" style="font-size:10px;color:#666;margin-left:4px;margin-right:2px;">LEADS</span>
+            <span class="progress-pip" data-section="leads" style="width:8px;height:8px;border-radius:50%;background:#333;transition:all 0.3s;"></span>
+            <span class="pip-label" style="font-size:10px;color:#666;margin-left:4px;margin-right:2px;">INV</span>
+            <span class="progress-pip" data-section="investors" style="width:8px;height:8px;border-radius:50%;background:#333;transition:all 0.3s;"></span>
+            <span class="pip-label" style="font-size:10px;color:#666;margin-left:4px;margin-right:2px;">PLAN</span>
+            <span class="progress-pip" data-section="strategy" style="width:8px;height:8px;border-radius:50%;background:#333;transition:all 0.3s;"></span>
+            <span class="pip-label" style="font-size:10px;color:#666;margin-left:4px;margin-right:2px;">AI</span>
+            <span class="progress-pip" data-section="advisor" style="width:8px;height:8px;border-radius:50%;background:#333;transition:all 0.3s;"></span>
+        </div>
     </div>
+    <div id="thinking-detail" style="
+        margin-top:4px; padding-left:24px;
+        font-size:11px; color:#555; font-style:italic;
+        height:16px; overflow:hidden; transition:all 0.3s;
+    "></div>
 </div>
 <style>
 @keyframes banner-glow {
@@ -95,7 +107,12 @@ def render_dashboard_v5(
     0%,100% { opacity:1; transform:scale(1); }
     50% { opacity:0.5; transform:scale(0.8); }
 }
-body { padding-top: 48px !important; }
+@keyframes fade-in-row {
+    from { opacity:0; transform:translateY(8px); }
+    to { opacity:1; transform:translateY(0); }
+}
+.row-animate { animation: fade-in-row 0.4s ease-out forwards; }
+body { padding-top: 60px !important; }
 </style>
 """
 
@@ -1458,7 +1475,7 @@ def _tag_class(platform):
 # ═══════════════════════════════════════════════
 def _streaming_js():
     """Client-side SSE listener that connects to /report/{id}/stream
-    and dynamically updates dashboard sections as data arrives."""
+    and dynamically updates dashboard sections as data arrives in real-time."""
     return """
 (function(){
   if(!__STREAMING__) return;
@@ -1467,7 +1484,18 @@ def _streaming_js():
   var tier = __TIER__;
   var banner = document.getElementById('streaming-banner');
   var statusEl = document.getElementById('streaming-status');
+  var thinkingEl = document.getElementById('thinking-detail');
   var pips = document.querySelectorAll('.progress-pip');
+
+  // Accumulated data as items stream in
+  var channels = [];
+  var personas = [];
+  var leads = [];
+  var competitors = [];
+  var investors = [];
+  var channelsMeta = null;
+  var strategyData = null;
+  var channelCount = 0;
 
   function setPip(section, state){
     var pip = document.querySelector('.progress-pip[data-section="'+section+'"]');
@@ -1478,6 +1506,7 @@ def _streaming_js():
   }
 
   function setStatus(msg){ if(statusEl) statusEl.textContent = msg; }
+  function setThinking(msg){ if(thinkingEl) thinkingEl.textContent = msg || ''; }
 
   function escHtml(s){
     if(!s) return '';
@@ -1495,80 +1524,83 @@ def _streaming_js():
     return '';
   }
 
-  // ---------- SECTION BUILDERS ----------
+  // ---------- INDIVIDUAL ITEM RENDERERS ----------
 
-  function buildChannelsTable(channels, bullseye, summary, hotTake, profile){
-    // Update executive summary
-    var execEl = document.getElementById('executive');
-    if(execEl && (summary || hotTake)){
-      var sumBox = execEl.querySelector('.exec-text');
-      var htBox = execEl.querySelector('.hottake-box .exec-text');
-      if(sumBox && summary) sumBox.textContent = summary;
-      if(htBox && hotTake) htBox.textContent = hotTake;
-    }
-
-    // Update bullseye
-    var bEl = document.getElementById('bullseye');
-    if(bEl && bullseye){
-      var inner = (bullseye.inner_ring||{}).channels||[];
-      var promising = (bullseye.promising||{}).channels||[];
-      var rings = bEl.querySelectorAll('.ring-items');
-      if(rings[0]) rings[0].innerHTML = inner.map(function(c){return '<li>'+escHtml(c)+'</li>'}).join('');
-      if(rings[1]) rings[1].innerHTML = promising.map(function(c){return '<li>'+escHtml(c)+'</li>'}).join('');
-    }
-
-    // Build channel table
-    var sorted = (channels||[]).slice().sort(function(a,b){return(b.score||0)-(a.score||0)});
-    var tbody = '';
-    sorted.forEach(function(ch, i){
-      var score = ch.score||0;
-      var color = score>=8?'var(--green)':score>=6?'var(--amber)':'var(--text3)';
-      var pct = score*10;
-      var chId = 'ch-'+i;
-      var insight = ch.killer_insight||'';
-      var firstMove = ch.first_move||'';
-      var moveHtml = tier==='starter'||tier==='growth'
-        ? '<span class="cell-muted">'+escHtml(firstMove.slice(0,120))+'</span>'
-        : '<span style="color:var(--text3);font-size:10px">Starter plan</span>';
-
-      tbody += '<tr class="ch-row" data-target="'+chId+'" onclick="toggleChannel(\\''+chId+'\\')">'+
-        '<td class="cell-rank">'+(i+1)+'</td>'+
-        '<td class="cell-name">'+escHtml(ch.channel||'')+'</td>'+
-        '<td><div class="score-bar"><span class="score-label" style="color:'+color+'">'+score+'</span>'+
-        '<div class="score-track"><div class="score-fill" style="width:'+pct+'%;background:'+color+'"></div></div></div></td>'+
-        '<td class="cell-muted">'+escHtml(ch.effort||'')+'</td>'+
-        '<td class="cell-muted">'+escHtml(ch.timeline||'')+'</td>'+
-        '<td style="font-family:var(--mono);font-size:11px;color:var(--text2)">'+escHtml(ch.budget||'')+'</td>'+
-        '<td class="cell-desc">'+escHtml(insight.slice(0,100))+'</td>'+
-        '<td>'+moveHtml+'</td></tr>';
-
-      // Accordion placeholder (deep_dive data)
-      var deep = ch.deep_dive||{};
-      var actions = deep.actions||[];
-      var research = deep.research||[];
-      var expandInner = '';
-      if(actions.length){
-        expandInner += '<div class="action-grid">';
-        actions.forEach(function(a){
-          expandInner += '<div class="action-card"><div class="action-title">'+escHtml(a.title||'')+'</div>'+
-            '<div class="action-desc">'+escHtml(a.description||'')+'</div>'+
-            '<div class="action-result">'+escHtml(a.expected_result||'')+'</div></div>';
-        });
-        expandInner += '</div>';
-      }
-      tbody += '<tr class="ch-expand" id="'+chId+'"><td colspan="8">'+expandInner+'</td></tr>';
-    });
-
+  function addChannelRow(ch, idx){
     var chSection = document.getElementById('channels');
-    if(chSection){
-      var tableBody = chSection.querySelector('.data-table tbody');
-      if(tableBody) tableBody.innerHTML = tbody;
-      // Remove any loading skeleton
+    if(!chSection) return;
+    var tableBody = chSection.querySelector('.data-table tbody');
+    if(!tableBody) return;
+
+    // Remove skeleton on first channel
+    if(idx === 0){
       var skel = chSection.querySelector('.streaming-skeleton');
       if(skel) skel.remove();
     }
 
-    // Update KPIs
+    var score = ch.score||0;
+    var color = score>=8?'var(--green)':score>=6?'var(--amber)':'var(--text3)';
+    var pct = score*10;
+    var chId = 'ch-'+idx;
+    var insight = ch.killer_insight||'';
+    var firstMove = ch.first_move||'';
+    var moveHtml = tier==='starter'||tier==='growth'
+      ? '<span class="cell-muted">'+escHtml(firstMove.slice(0,120))+'</span>'
+      : '<span style="color:var(--text3);font-size:10px">Starter plan</span>';
+
+    var row = document.createElement('tr');
+    row.className = 'ch-row';
+    row.setAttribute('data-target', chId);
+    row.setAttribute('onclick', "toggleChannel('"+chId+"')");
+    row.style.opacity = '0';
+    row.style.transform = 'translateY(8px)';
+    row.style.transition = 'all 0.4s ease';
+    row.innerHTML =
+      '<td class="cell-rank">'+(idx+1)+'</td>'+
+      '<td class="cell-name">'+escHtml(ch.channel||'')+'</td>'+
+      '<td><div class="score-bar"><span class="score-label" style="color:'+color+'">'+score+'</span>'+
+      '<div class="score-track"><div class="score-fill" style="width:0%;background:'+color+'"></div></div></div></td>'+
+      '<td class="cell-muted">'+escHtml(ch.effort||'')+'</td>'+
+      '<td class="cell-muted">'+escHtml(ch.timeline||'')+'</td>'+
+      '<td style="font-family:var(--mono);font-size:11px;color:var(--text2)">'+escHtml(ch.budget||'')+'</td>'+
+      '<td class="cell-desc">'+escHtml(insight.slice(0,100))+'</td>'+
+      '<td>'+moveHtml+'</td>';
+    tableBody.appendChild(row);
+
+    // Accordion expand row
+    var deep = ch.deep_dive||{};
+    var actions = deep.actions||[];
+    var expandInner = '';
+    if(actions.length){
+      expandInner += '<div class="action-grid">';
+      actions.forEach(function(a){
+        expandInner += '<div class="action-card"><div class="action-title">'+escHtml(a.title||'')+'</div>'+
+          '<div class="action-desc">'+escHtml(a.description||'')+'</div>'+
+          '<div class="action-result">'+escHtml(a.expected_result||'')+'</div></div>';
+      });
+      expandInner += '</div>';
+    }
+    var expandRow = document.createElement('tr');
+    expandRow.className = 'ch-expand';
+    expandRow.id = chId;
+    expandRow.innerHTML = '<td colspan="8">'+expandInner+'</td>';
+    tableBody.appendChild(expandRow);
+
+    // Animate in
+    requestAnimationFrame(function(){
+      row.style.opacity = '1';
+      row.style.transform = 'translateY(0)';
+      // Animate score bar fill
+      var fill = row.querySelector('.score-fill');
+      if(fill) setTimeout(function(){ fill.style.transition='width 0.6s ease'; fill.style.width=pct+'%'; }, 100);
+    });
+
+    // Update KPI counters progressively
+    updateKPIs();
+  }
+
+  function updateKPIs(){
+    var sorted = channels.slice().sort(function(a,b){return(b.score||0)-(a.score||0)});
     var topScore = sorted.length?sorted[0].score:0;
     var topName = sorted.length?sorted[0].channel:'';
     var avg = sorted.length?Math.round(sorted.reduce(function(s,c){return s+(c.score||0)},0)/sorted.length*10)/10:0;
@@ -1584,280 +1616,343 @@ def _streaming_js():
 
     // Update __REPORT_DATA__ for .md download
     __REPORT_DATA__.channels = channels;
+  }
+
+  function addPersonaCard(p, idx){
+    var section = document.getElementById('leads');
+    if(!section) return;
+    // Remove skeleton on first persona
+    if(idx === 0){
+      var skel = section.querySelector('.streaming-skeleton');
+      if(skel) skel.remove();
+    }
+    var strip = section.querySelector('.persona-strip');
+    if(!strip){
+      strip = document.createElement('div');
+      strip.className = 'persona-strip';
+      var header = section.querySelector('.section-header');
+      if(header) header.insertAdjacentElement('afterend', strip);
+    }
+    var card = document.createElement('div');
+    card.className = 'persona-card';
+    card.style.opacity = '0';
+    card.style.transform = 'scale(0.95)';
+    card.style.transition = 'all 0.4s ease';
+    var tags = (p.platforms||[]).map(function(pl){return '<span class="cell-tag '+tagClass(pl)+'">'+escHtml(pl)+'</span> '}).join('');
+    var sigs = (p.pain_signals||[]).slice(0,3).map(function(s){return '<li>'+escHtml(s.slice(0,90))+'</li>'}).join('');
+    card.innerHTML = '<div class="persona-name">'+escHtml(p.name||'')+'</div>'+
+      '<div class="persona-desc">'+escHtml((p.description||'').slice(0,180))+'</div>'+
+      '<div class="persona-tags">'+tags+'</div>'+
+      '<ul class="persona-signals">'+sigs+'</ul>';
+    strip.appendChild(card);
+    requestAnimationFrame(function(){ card.style.opacity='1'; card.style.transform='scale(1)'; });
+  }
+
+  function addLeadRow(l, idx){
+    var section = document.getElementById('leads');
+    if(!section) return;
+    var tableBody = section.querySelector('.data-table tbody');
+    if(!tableBody) return;
+    var score = l.score||0;
+    var color = score>=8?'var(--green)':score>=6?'var(--amber)':'var(--text3)';
+    var row = document.createElement('tr');
+    row.style.opacity = '0';
+    row.style.transform = 'translateX(-12px)';
+    row.style.transition = 'all 0.4s ease';
+    row.innerHTML = '<td class="cell-rank">'+(idx+1)+'</td>'+
+      '<td class="cell-name"><a href="'+escHtml(l.url||'#')+'" target="_blank" rel="noopener">'+escHtml(l.name||'')+'</a></td>'+
+      '<td class="cell-muted">'+escHtml(l.title||'')+'</td>'+
+      '<td><span class="cell-tag '+tagClass(l.platform||'')+'">'+escHtml(l.platform||'')+'</span></td>'+
+      '<td style="font-family:var(--mono);font-size:11px;color:var(--text2)">'+escHtml(l.handle||'')+'</td>'+
+      '<td class="cell-score" style="color:'+color+'">'+score+'/10</td>'+
+      '<td class="cell-desc">'+escHtml((l.relevance||'').slice(0,160))+'</td>';
+    tableBody.appendChild(row);
+    requestAnimationFrame(function(){ row.style.opacity='1'; row.style.transform='translateX(0)'; });
+    // Update KPI
+    var kpis = document.getElementById('kpis');
+    if(kpis){ var vals = kpis.querySelectorAll('.kpi-value'); if(vals[2]) vals[2].textContent = leads.length; }
+    __REPORT_DATA__.leads = { personas: personas, leads: leads };
+  }
+
+  function addCompetitorCard(c, idx){
+    var section = document.getElementById('investors');
+    if(!section) return;
+    if(idx === 0){
+      var skel = section.querySelector('.streaming-skeleton');
+      if(skel) skel.remove();
+    }
+    var strip = section.querySelector('.comp-strip');
+    if(!strip){
+      strip = document.createElement('div');
+      strip.className = 'comp-strip';
+      var header = section.querySelector('.section-header');
+      if(header) header.insertAdjacentElement('afterend', strip);
+    }
+    var card = document.createElement('div');
+    card.className = 'comp-card';
+    card.style.opacity = '0';
+    card.style.transform = 'scale(0.95)';
+    card.style.transition = 'all 0.4s ease';
+    var inv = (c.investors||[]).slice(0,4).join(', ');
+    card.innerHTML = '<div class="comp-name">'+escHtml(c.name||'')+'</div>'+
+      '<div class="comp-funding">'+escHtml(c.funding||'Unknown')+'</div>'+
+      '<div class="comp-desc">'+escHtml((c.description||'').slice(0,120))+'</div>'+
+      (inv?'<div class="comp-investors">Investors: '+escHtml(inv)+'</div>':'');
+    strip.appendChild(card);
+    requestAnimationFrame(function(){ card.style.opacity='1'; card.style.transform='scale(1)'; });
+    var kpis = document.getElementById('kpis');
+    if(kpis){ var vals = kpis.querySelectorAll('.kpi-value'); if(vals[4]) vals[4].textContent = competitors.length; }
+  }
+
+  function addInvestorRow(inv, idx){
+    var section = document.getElementById('investors');
+    if(!section) return;
+    var tableBody = section.querySelector('.data-table tbody');
+    if(!tableBody) return;
+    var typeClass = (inv.type||'').toLowerCase().indexOf('vc')>=0?'tag-linkedin':
+                    (inv.type||'').toLowerCase().indexOf('angel')>=0?'tag-twitter':'';
+    var row = document.createElement('tr');
+    row.style.opacity = '0';
+    row.style.transform = 'translateX(-12px)';
+    row.style.transition = 'all 0.4s ease';
+    row.innerHTML = '<td class="cell-rank">'+(idx+1)+'</td>'+
+      '<td class="cell-name">'+(inv.linkedin?'<a href="'+escHtml(inv.linkedin)+'" target="_blank" rel="noopener">':'')+
+      escHtml(inv.name||'')+(inv.linkedin?'</a>':'')+'</td>'+
+      '<td><span class="cell-tag '+typeClass+'">'+escHtml(inv.type||'')+'</span></td>'+
+      '<td class="cell-desc">'+escHtml((inv.focus||inv.thesis||'').slice(0,180))+'</td>'+
+      '<td><span class="cell-tag">'+(inv.source||'Market')+'</span></td>';
+    tableBody.appendChild(row);
+    requestAnimationFrame(function(){ row.style.opacity='1'; row.style.transform='translateX(0)'; });
+    var kpis = document.getElementById('kpis');
+    if(kpis){ var vals = kpis.querySelectorAll('.kpi-value'); if(vals[3]) vals[3].textContent = investors.length; }
+    __REPORT_DATA__.investors = { competitors: competitors, competitor_investors: investors, market_investors: [] };
+  }
+
+  function updateChannelsMeta(payload){
+    var bullseye = payload.bullseye_ranking||{};
+    var summary = payload.executive_summary||'';
+    var hotTake = payload.hot_take||'';
+    var profile = payload.company_profile||{};
+
+    var execEl = document.getElementById('executive');
+    if(execEl){
+      var sumBox = execEl.querySelector('.exec-text');
+      var htBox = execEl.querySelector('.hottake-box .exec-text');
+      if(sumBox && summary) sumBox.textContent = summary;
+      if(htBox && hotTake) htBox.textContent = hotTake;
+    }
+    var bEl = document.getElementById('bullseye');
+    if(bEl && bullseye){
+      var inner = (bullseye.inner_ring||{}).channels||[];
+      var promising = (bullseye.promising||{}).channels||[];
+      var rings = bEl.querySelectorAll('.ring-items');
+      if(rings[0]) rings[0].innerHTML = inner.map(function(c){return '<li>'+escHtml(c)+'</li>'}).join('');
+      if(rings[1]) rings[1].innerHTML = promising.map(function(c){return '<li>'+escHtml(c)+'</li>'}).join('');
+    }
     __REPORT_DATA__.bullseye = bullseye;
     __REPORT_DATA__.summary = summary;
     __REPORT_DATA__.hot_take = hotTake;
   }
 
-
-  function buildLeads(data){
-    var personas = data.personas||[];
-    var leads = data.leads||[];
-
-    var section = document.getElementById('leads');
-    if(!section) return;
-
-    // Remove skeleton
-    var skel = section.querySelector('.streaming-skeleton');
-    if(skel) skel.remove();
-
-    // Build persona strip
-    if(personas.length){
-      var pHtml = '<div class="persona-strip">';
-      personas.forEach(function(p){
-        var tags = (p.platforms||[]).map(function(pl){return '<span class="cell-tag '+tagClass(pl)+'">'+escHtml(pl)+'</span> '}).join('');
-        var sigs = (p.pain_signals||[]).slice(0,3).map(function(s){return '<li>'+escHtml(s.slice(0,90))+'</li>'}).join('');
-        pHtml += '<div class="persona-card"><div class="persona-name">'+escHtml(p.name||'')+'</div>'+
-          '<div class="persona-desc">'+escHtml((p.description||'').slice(0,180))+'</div>'+
-          '<div class="persona-tags">'+tags+'</div>'+
-          '<ul class="persona-signals">'+sigs+'</ul></div>';
-      });
-      pHtml += '</div>';
-      var existing = section.querySelector('.persona-strip');
-      if(existing) existing.outerHTML = pHtml;
-      else { var header = section.querySelector('.section-header'); if(header) header.insertAdjacentHTML('afterend', pHtml); }
-    }
-
-    // Build leads table
-    if(leads.length){
-      var tbody = '';
-      leads.forEach(function(l, i){
-        var score = l.score||0;
-        var color = score>=8?'var(--green)':score>=6?'var(--amber)':'var(--text3)';
-        tbody += '<tr><td class="cell-rank">'+(i+1)+'</td>'+
-          '<td class="cell-name"><a href="'+escHtml(l.url||'#')+'" target="_blank" rel="noopener">'+escHtml(l.name||'')+'</a></td>'+
-          '<td class="cell-muted">'+escHtml(l.title||'')+'</td>'+
-          '<td><span class="cell-tag '+tagClass(l.platform||'')+'">'+escHtml(l.platform||'')+'</span></td>'+
-          '<td style="font-family:var(--mono);font-size:11px;color:var(--text2)">'+escHtml(l.handle||'')+'</td>'+
-          '<td class="cell-score" style="color:'+color+'">'+score+'/10</td>'+
-          '<td class="cell-desc">'+escHtml((l.relevance||'').slice(0,160))+'</td></tr>';
-      });
-      var tableBody = section.querySelector('.data-table tbody');
-      if(tableBody) tableBody.innerHTML = tbody;
-    }
-
-    // Update KPI
-    var kpis = document.getElementById('kpis');
-    if(kpis){
-      var vals = kpis.querySelectorAll('.kpi-value');
-      if(vals[2]) vals[2].textContent = leads.length;
-    }
-
-    __REPORT_DATA__.leads = data;
-  }
-
-
-  function buildInvestors(data){
-    var competitors = data.competitors||[];
-    var compInv = data.competitor_investors||[];
-    var mktInv = data.market_investors||[];
-    var allInv = compInv.concat(mktInv);
-
-    var section = document.getElementById('investors');
-    if(!section) return;
-
-    var skel = section.querySelector('.streaming-skeleton');
-    if(skel) skel.remove();
-
-    // Competitor cards
-    if(competitors.length){
-      var cHtml = '<div class="comp-strip">';
-      competitors.forEach(function(c){
-        var inv = (c.investors||[]).slice(0,4).join(', ');
-        cHtml += '<div class="comp-card"><div class="comp-name">'+escHtml(c.name||'')+'</div>'+
-          '<div class="comp-funding">'+escHtml(c.funding||'Unknown')+'</div>'+
-          '<div class="comp-desc">'+escHtml((c.description||'').slice(0,120))+'</div>'+
-          (inv?'<div class="comp-investors">Investors: '+escHtml(inv)+'</div>':'')+'</div>';
-      });
-      cHtml += '</div>';
-      var existing = section.querySelector('.comp-strip');
-      if(existing) existing.outerHTML = cHtml;
-      else { var header = section.querySelector('.section-header'); if(header) header.insertAdjacentHTML('afterend', cHtml); }
-    }
-
-    // Investor table
-    if(allInv.length){
-      var tbody = '';
-      allInv.forEach(function(inv, i){
-        var typeClass = (inv.type||'').toLowerCase().indexOf('vc')>=0?'tag-linkedin':
-                        (inv.type||'').toLowerCase().indexOf('angel')>=0?'tag-twitter':'';
-        tbody += '<tr><td class="cell-rank">'+(i+1)+'</td>'+
-          '<td class="cell-name">'+(inv.linkedin?'<a href="'+escHtml(inv.linkedin)+'" target="_blank" rel="noopener">':'')+
-          escHtml(inv.name||'')+(inv.linkedin?'</a>':'')+'</td>'+
-          '<td><span class="cell-tag '+typeClass+'">'+escHtml(inv.type||'')+'</span></td>'+
-          '<td class="cell-desc">'+escHtml((inv.focus||inv.thesis||'').slice(0,180))+'</td>'+
-          '<td><span class="cell-tag">'+(inv.source||'Market')+'</span></td></tr>';
-      });
-      var tableBody = section.querySelector('.data-table tbody');
-      if(tableBody) tableBody.innerHTML = tbody;
-    }
-
-    // KPIs
-    var kpis = document.getElementById('kpis');
-    if(kpis){
-      var vals = kpis.querySelectorAll('.kpi-value');
-      if(vals[3]) vals[3].textContent = allInv.length;
-      if(vals[4]) vals[4].textContent = competitors.length;
-    }
-
-    __REPORT_DATA__.investors = data;
-  }
-
-
-  function buildStrategy(data){
-    var plan = data.ninety_day_plan||{};
-    var budget = data.budget_allocation||{};
-    var risks = data.risk_matrix||[];
-    var moat = data.competitive_moat||'';
-
+  function updateStrategy(payload){
+    __REPORT_DATA__.plan = payload.ninety_day_plan||{};
+    __REPORT_DATA__.budget = payload.budget_allocation||{};
+    __REPORT_DATA__.risks = payload.risk_matrix||[];
+    __REPORT_DATA__.moat = payload.competitive_moat||'';
     var section = document.getElementById('strategy');
     if(!section) return;
-
     var skel = section.querySelector('.streaming-skeleton');
     if(skel) skel.remove();
-
-    // We only show strategy content for paid tiers
-    // The section HTML is already gated — just update __REPORT_DATA__
-    __REPORT_DATA__.plan = plan;
-    __REPORT_DATA__.budget = budget;
-    __REPORT_DATA__.risks = risks;
-    __REPORT_DATA__.moat = moat;
-
-    // If tier allows, rebuild the strategy section content
     if(tier==='starter'||tier==='growth'){
-      // The full strategy was already rendered server-side with placeholders
-      // On a real implementation we'd rebuild it here, but for now
-      // a page refresh will show the complete data
-      section.querySelector('.section-header .update-badge').innerHTML = '<span class="dot" style="background:var(--green)"></span> Complete';
+      var badge = section.querySelector('.section-header .update-badge');
+      if(badge) badge.innerHTML = '<span class="dot" style="background:var(--green)"></span> Complete';
     }
   }
 
+  function finishAnalysis(){
+    pips.forEach(function(p){ p.style.background='#00ff88'; p.style.animation='none'; });
+    setStatus('Analysis complete — your full report is ready.');
+    setThinking('');
+    setTimeout(function(){
+      if(banner){
+        banner.style.transition='all 0.5s ease';
+        banner.style.borderColor='#00ff88';
+        var dot = banner.querySelector('[style*="animation:pulse-dot"]');
+        if(dot){ dot.style.background='#00ff88'; dot.style.animation='none'; }
+      }
+    }, 500);
+    setTimeout(function(){
+      if(banner){
+        banner.style.opacity='0';
+        setTimeout(function(){ banner.style.display='none'; document.body.style.paddingTop=''; }, 500);
+      }
+    }, 8000);
+  }
 
-  // ---------- TRIGGER + POLL ----------
+  function showError(msg){
+    setStatus('Analysis hit a snag: '+(msg||'unknown error')+'. Try refreshing.');
+    setThinking('');
+    pips.forEach(function(p){ p.style.background='#ff4444'; });
+  }
 
-  setStatus('Starting deep analysis...');
+
+  // ---------- SSE CONNECTION (true real-time streaming) ----------
+
+  setStatus('Connecting to analysis engine...');
   setPip('channels','active');
 
-  var seen = {};  // track which sections we've rendered
-  var notStartedCount = 0;
+  var es = new EventSource('/report/'+rid+'/stream');
+  var channelsPhaseComplete = false;
 
-  // Trigger the analysis (also auto-triggered server-side on page load)
-  setStatus('Starting analysis...');
-  fetch('/report/'+rid+'/stream')
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      if(d.status==='already_running'){
-        setStatus('Analysis in progress — watching for results...');
-      } else if(d.error){
-        setStatus('Server: '+d.error+'. Polling for results...');
-      } else {
-        setStatus('Analyzing 19 growth channels...');
-      }
-      // Start polling regardless
-      pollProgress();
-    })
-    .catch(function(e){
-      // Even if /stream call fails, analysis was auto-triggered server-side
-      setStatus('Connecting to analysis engine...');
-      pollProgress();
-    });
+  es.addEventListener('thinking', function(e){
+    var d = JSON.parse(e.data);
+    setStatus(d.message||'');
+    setThinking(d.detail||'');
+  });
 
-  function pollProgress(){
+  es.addEventListener('channel', function(e){
+    var d = JSON.parse(e.data);
+    var ch = d.channel;
+    if(!ch) return;
+    channels.push(ch);
+    channelCount++;
+    addChannelRow(ch, d.index != null ? d.index : channels.length-1);
+    setStatus('Analyzing channels... ('+channelCount+'/19)');
+  });
+
+  es.addEventListener('section', function(e){
+    var d = JSON.parse(e.data);
+    var section = d.section;
+    var payload = d.payload||{};
+
+    if(section === 'channels_meta'){
+      channelsPhaseComplete = true;
+      setPip('channels','done');
+      setPip('leads','active');
+      updateChannelsMeta(payload);
+      setStatus('Channels complete. Searching for potential customers...');
+    }
+    if(section === 'leads_complete'){
+      setPip('leads','done');
+      setPip('investors','active');
+      setStatus('Found '+((payload||{}).count||0)+' potential leads. Mapping investor landscape...');
+    }
+    if(section === 'investors_complete'){
+      setPip('investors','done');
+      setPip('strategy','active');
+      setStatus('Found '+((payload||{}).count||0)+' investors. Generating strategy...');
+    }
+    if(section === 'strategy'){
+      setPip('strategy','done');
+      updateStrategy(payload);
+    }
+  });
+
+  es.addEventListener('persona', function(e){
+    var d = JSON.parse(e.data);
+    var p = d.persona;
+    if(!p) return;
+    personas.push(p);
+    addPersonaCard(p, d.index != null ? d.index : personas.length-1);
+  });
+
+  es.addEventListener('lead', function(e){
+    var d = JSON.parse(e.data);
+    var l = d.lead;
+    if(!l) return;
+    leads.push(l);
+    addLeadRow(l, d.index != null ? d.index : leads.length-1);
+  });
+
+  es.addEventListener('competitor', function(e){
+    var d = JSON.parse(e.data);
+    var c = d.competitor;
+    if(!c) return;
+    competitors.push(c);
+    addCompetitorCard(c, d.index != null ? d.index : competitors.length-1);
+    setPip('investors','active');
+  });
+
+  es.addEventListener('investor', function(e){
+    var d = JSON.parse(e.data);
+    var inv = d.investor;
+    if(!inv) return;
+    investors.push(inv);
+    addInvestorRow(inv, d.index != null ? d.index : investors.length-1);
+  });
+
+  es.addEventListener('advisor_ready', function(e){
+    var d = {};
+    try { d = JSON.parse(e.data); } catch(ex){}
+    setPip('advisor', d.partial ? 'active' : 'done');
+    var msg = d.message || 'Your AI advisor is ready.';
+    setThinking(msg);
+    // Activate chat widget if present
+    var chatWidget = document.getElementById('advisor-chat');
+    if(chatWidget) {
+      chatWidget.style.display = 'block';
+      chatWidget.style.opacity = '0';
+      chatWidget.style.transition = 'opacity 0.5s ease';
+      requestAnimationFrame(function(){ chatWidget.style.opacity = '1'; });
+    }
+  });
+
+  es.addEventListener('done', function(e){
+    es.close();
+    // Mark all leads/investors pips done
+    if(leads.length || personas.length) setPip('leads','done');
+    if(investors.length || competitors.length) setPip('investors','done');
+    finishAnalysis();
+  });
+
+  es.addEventListener('error', function(e){
+    // SSE native error — could be connection drop or server error event
+    if(e.data){
+      try {
+        var d = JSON.parse(e.data);
+        showError(d.message);
+        es.close();
+        return;
+      } catch(ex){}
+    }
+    // Connection error — fall back to polling
+    es.close();
+    setStatus('Connection lost. Switching to polling...');
+    fallbackPoll();
+  });
+
+  es.addEventListener('already_complete', function(e){
+    es.close();
+    // Report was already done — reload to show full data
+    setStatus('Report is ready. Loading...');
+    setTimeout(function(){ window.location.reload(); }, 500);
+  });
+
+  es.addEventListener('already_running', function(e){
+    // Another tab/session started it — switch to polling for that
+    es.close();
+    setStatus('Analysis in progress — watching for results...');
+    fallbackPoll();
+  });
+
+  // Fallback polling if SSE connection drops
+  function fallbackPoll(){
     fetch('/report/'+rid+'/progress')
       .then(function(r){ return r.json(); })
       .then(function(d){
-        var status = d.status||'';
-        var sections = d.sections||{};
-
-        // Update status message
-        if(status.indexOf('channel')>=0 && !seen.channels){
-          setStatus('Analyzing growth channels...');
+        if(d.status==='complete'){
+          window.location.reload();
+          return;
         }
-
-        // Render sections as they arrive
-        if(sections.channels && !seen.channels){
-          seen.channels = true;
-          setPip('channels','done');
-          setPip('leads','active');
-          setStatus('Channels analyzed. Searching for leads and investors...');
-          var ch = sections.channels;
-          buildChannelsTable(
-            ch.channel_analysis||[],
-            ch.bullseye_ranking||{},
-            ch.executive_summary||'',
-            ch.hot_take||'',
-            ch.company_profile||{}
-          );
+        if(d.status==='error'){
+          showError(d.error||'unknown');
+          return;
         }
-        if(sections.leads && !seen.leads){
-          seen.leads = true;
-          setPip('leads','done');
-          setStatus('Leads found. Discovering investors...');
-          buildLeads(sections.leads);
-        }
-        if(sections.investors && !seen.investors){
-          seen.investors = true;
-          setPip('investors','done');
-          setPip('strategy','active');
-          setStatus('Investors mapped. Finalizing strategy...');
-          buildInvestors(sections.investors);
-        }
-        if(sections.strategy && !seen.strategy){
-          seen.strategy = true;
-          setPip('strategy','done');
-          setStatus('Strategy complete.');
-          buildStrategy(sections.strategy);
-        }
-
-        // Check completion
-        if(status==='complete'){
-          pips.forEach(function(p){ p.style.background='#00ff88'; p.style.animation='none'; });
-          setStatus('Analysis complete — your full report is ready.');
-          setTimeout(function(){
-            if(banner){
-              banner.style.transition='all 0.5s ease';
-              banner.style.borderColor='#00ff88';
-              banner.querySelector('div').style.background = '#00ff88';
-              var dot = banner.querySelector('[style*="animation:pulse-dot"]');
-              if(dot){ dot.style.background='#00ff88'; dot.style.animation='none'; }
-            }
-          }, 500);
-          setTimeout(function(){
-            if(banner){
-              banner.style.opacity='0';
-              setTimeout(function(){ banner.style.display='none'; document.body.style.paddingTop=''; }, 500);
-            }
-          }, 5000);
-          return; // stop polling
-        }
-
-        if(status==='error'){
-          setStatus('Analysis hit a snag: '+(d.error||'unknown error')+'. Try refreshing.');
-          pips.forEach(function(p){ p.style.background='#ff4444'; });
-          return; // stop polling
-        }
-
-        // If not_started for too long, try triggering again
-        if(status==='not_started'){
-          notStartedCount = (notStartedCount||0) + 1;
-          if(notStartedCount > 5){
-            setStatus('Analysis is taking longer than expected. Retrying...');
-            fetch('/report/'+rid+'/stream').catch(function(){});
-            notStartedCount = 0;
-          }
-        } else {
-          notStartedCount = 0;
-        }
-
-        // Keep polling every 3 seconds
-        setTimeout(pollProgress, 3000);
+        setTimeout(fallbackPoll, 3000);
       })
-      .catch(function(e){
-        // Network error — retry in 5 seconds
-        setStatus('Reconnecting...');
-        setTimeout(pollProgress, 5000);
-      });
+      .catch(function(){ setTimeout(fallbackPoll, 5000); });
   }
+
 })();
 """
 
