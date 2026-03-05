@@ -26,6 +26,8 @@ from src.config import settings
 from src.modules import auth, payments, report_store
 from src.analysis.report_generator import generate_report_html
 from src.analysis.dashboard_renderer import render_dashboard
+from src.analysis.dashboard_v3 import render_dashboard_v3
+from src.analysis.dashboard_v4 import render_dashboard_v4
 
 REPORTS_DIR = Path(__file__).parent.parent / "reports"
 
@@ -830,6 +832,21 @@ async def test_report(request: Request, tier: str = "free"):
     """Test report with mock data for iterating on layout. Supports ?tier=free|starter|growth"""
     mock = _mock_analysis()
     html = render_dashboard(
+        analysis=mock,
+        startup_name="Linear",
+        report_id="test-mock-001",
+        tier=tier,
+        checkout_url="#pricing",
+        upgrade_url="#pricing",
+    )
+    return HTMLResponse(content=html)
+
+
+@app.get("/test2", response_class=HTMLResponse)
+async def test_report_v4(request: Request, tier: str = "free"):
+    """V4 dashboard — formal BI style with spreadsheet tabs. Supports ?tier=free|starter|growth"""
+    mock = _mock_analysis()
+    html = render_dashboard_v4(
         analysis=mock,
         startup_name="Linear",
         report_id="test-mock-001",
