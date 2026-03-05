@@ -1360,53 +1360,113 @@ async def stream_deep_analysis(request: Request, report_id: str):
         except Exception:
             pass
 
-    # If already running (reconnect scenario), ensure background task exists and poll progress
-    if is_deep_analysis_running(report_id):
-        logger.info(f"[SSE] Analysis already running for {report_id}, streaming progress via polling")
-        async def progress_generator():
-            yield {"event": "thinking", "data": json.dumps({"message": "Analysis in progress — reconnecting...", "detail": ""})}
-            last_status = ""
-            while True:
-                if await request.is_disconnected():
-                    break
-                progress = get_deep_progress(report_id)
-                status = progress.get("status", "")
-                if status != last_status:
-                    yield {"event": "thinking", "data": json.dumps({"message": status, "detail": ""})}
-                    last_status = status
-                if status == "complete":
-                    yield {"event": "done", "data": json.dumps({})}
-                    break
-                if status == "error":
-                    yield {"event": "error", "data": json.dumps({"message": progress.get("error", "Unknown")})}
-                    break
-                await asyncio.sleep(2)
-        return EventSourceResponse(progress_generator())
+    # ALWAYS use background task to drive the analysis.
+    # SSE streams progress FROM the background task via _deep_progress.
+    # This way even if SSE drops (Vercel proxy buffering), polling still works.
+    if not is_deep_analysis_running(report_id):
+        logger.info(f"[SSE] Starting background analysis for {report_id}")
+        asyncio.create_task(run_deep_analysis_background(report_id))
+        await asyncio.sleep(0.3)  # Give it a moment to start
+    else:
+        logger.info(f"[SSE] Analysis already running for {report_id}, streaming progress")
 
-    # Normal case: start analysis and stream events directly
-    async def event_generator():
-        try:
-            async for event in run_deep_analysis(report_id):
-                if await request.is_disconnected():
-                    logger.info(f"[SSE] Client disconnected for {report_id}")
-                    # Start background task so analysis continues even without SSE
-                    if is_deep_analysis_running(report_id):
-                        pass  # It's still running in the generator context
-                    break
-                ev_type = event.get("event", "status")
-                ev_data = event.get("data", {})
-                yield {
-                    "event": ev_type,
-                    "data": json.dumps(ev_data),
-                }
-        except Exception as e:
-            logger.error(f"[SSE] Error streaming {report_id}: {e}", exc_info=True)
-            yield {
-                "event": "error",
-                "data": json.dumps({"message": str(e)}),
-            }
+    # Stream progress from _deep_progress dict (populated by background task)
+    async def progress_stream():
+        emitted_channels = 0
+        emitted_personas = 0
+        emitted_leads = 0
+        emitted_competitors = 0
+        emitted_investors = 0
+        last_status = ""
+        emitted_sections = set()
 
-    return EventSourceResponse(event_generator())
+        yield {"event": "thinking", "data": json.dumps({"message": "Deep analysis starting...", "detail": ""})}
+
+        while True:
+            if await request.is_disconnected():
+                logger.info(f"[SSE] Client disconnected for {report_id} (analysis continues in background)")
+                break
+
+            progress = get_deep_progress(report_id)
+            if not progress:
+                await asyncio.sleep(1)
+                continue
+
+            status = progress.get("status", "")
+
+            # Stream status/thinking updates
+            if status and status != last_status:
+                yield {"event": "thinking", "data": json.dumps({"message": status, "detail": ""})}
+                last_status = status
+
+            # Stream channels one by one
+            p_channels = progress.get("channels", [])
+            while emitted_channels < len(p_channels):
+                ch = p_channels[emitted_channels]
+                yield {"event": "channel", "data": json.dumps({"index": emitted_channels, "channel": ch})}
+                emitted_channels += 1
+                await asyncio.sleep(0.05)
+
+            # Stream channels_meta section when available
+            sections = progress.get("sections", {})
+            if "channels_meta" in sections and "channels_meta" not in emitted_sections:
+                yield {"event": "section", "data": json.dumps({"section": "channels_meta", "payload": sections["channels_meta"]})}
+                emitted_sections.add("channels_meta")
+
+            # Stream personas one by one
+            p_personas = progress.get("personas", [])
+            while emitted_personas < len(p_personas):
+                p = p_personas[emitted_personas]
+                yield {"event": "persona", "data": json.dumps({"index": emitted_personas, "persona": p})}
+                emitted_personas += 1
+                await asyncio.sleep(0.05)
+
+            # Stream leads one by one
+            p_leads = progress.get("leads", [])
+            while emitted_leads < len(p_leads):
+                l = p_leads[emitted_leads]
+                yield {"event": "lead", "data": json.dumps({"index": emitted_leads, "lead": l})}
+                emitted_leads += 1
+                await asyncio.sleep(0.05)
+
+            # Stream competitors one by one
+            p_competitors = progress.get("competitors", [])
+            while emitted_competitors < len(p_competitors):
+                c = p_competitors[emitted_competitors]
+                yield {"event": "competitor", "data": json.dumps({"index": emitted_competitors, "competitor": c})}
+                emitted_competitors += 1
+                await asyncio.sleep(0.05)
+
+            # Stream investors one by one
+            p_investors = progress.get("investors", [])
+            while emitted_investors < len(p_investors):
+                inv = p_investors[emitted_investors]
+                yield {"event": "investor", "data": json.dumps({"index": emitted_investors, "investor": inv})}
+                emitted_investors += 1
+                await asyncio.sleep(0.05)
+
+            # Stream leads_complete / investors_complete sections
+            for sec_name in ("leads_complete", "investors_complete"):
+                if sec_name in sections and sec_name not in emitted_sections:
+                    yield {"event": "section", "data": json.dumps({"section": sec_name, "payload": sections[sec_name]})}
+                    emitted_sections.add(sec_name)
+
+            # Stream strategy section
+            if "strategy" in sections and "strategy" not in emitted_sections:
+                yield {"event": "section", "data": json.dumps({"section": "strategy", "payload": sections["strategy"]})}
+                emitted_sections.add("strategy")
+
+            # Check for completion
+            if status == "complete":
+                yield {"event": "done", "data": json.dumps({})}
+                break
+            if status == "error":
+                yield {"event": "error", "data": json.dumps({"message": progress.get("error", "Unknown")})}
+                break
+
+            await asyncio.sleep(1)
+
+    return EventSourceResponse(progress_stream())
 
 
 @app.get("/report/{report_id}/progress")
