@@ -57,10 +57,69 @@ MAX_PROCESSED_CACHE = 5000
 # Track reports currently running deep analysis to prevent duplicates
 _deep_analysis_in_progress: set[str] = set()
 
+# --- Anti-spam state ---
+# Per-user cooldown: {author_id: last_processed_timestamp}
+_user_cooldowns: dict[str, float] = {}
+USER_COOLDOWN_SECONDS = 3600  # 1 hour between requests from same user
+
+# Per-target cooldown: {normalized_target: (report_id, timestamp)}
+_target_cooldowns: dict[str, tuple[str, float]] = {}
+TARGET_COOLDOWN_SECONDS = 86400  # 24 hours before re-analyzing same URL
+
+# Global rate limit: minimum seconds between starting any analysis
+_last_analysis_time: float = 0.0
+GLOBAL_MIN_INTERVAL = 300  # 5 minutes between analyses
+
 
 # =============================================================================
 # PHASE 1 — Quick analysis on tweet (fast, cheap)
 # =============================================================================
+
+def _normalize_target(target: str) -> str:
+    """Normalize a target URL/handle for dedup comparison."""
+    t = target.lower().strip().rstrip("/")
+    for prefix in ("https://", "http://", "www.", "@"):
+        if t.startswith(prefix):
+            t = t[len(prefix):]
+    return t
+
+
+def _check_spam(request: AnalysisRequest) -> str | None:
+    """
+    Check anti-spam rules. Returns a reason string if blocked, None if OK.
+    Also cleans up expired cooldowns.
+    """
+    global _last_analysis_time
+    now = time.time()
+
+    # Clean expired cooldowns periodically
+    expired_users = [uid for uid, ts in _user_cooldowns.items() if now - ts > USER_COOLDOWN_SECONDS]
+    for uid in expired_users:
+        del _user_cooldowns[uid]
+    expired_targets = [t for t, (_, ts) in _target_cooldowns.items() if now - ts > TARGET_COOLDOWN_SECONDS]
+    for t in expired_targets:
+        del _target_cooldowns[t]
+
+    # 1. Global rate limit
+    if now - _last_analysis_time < GLOBAL_MIN_INTERVAL:
+        wait = int(GLOBAL_MIN_INTERVAL - (now - _last_analysis_time))
+        return f"rate_limit:global ({wait}s remaining)"
+
+    # 2. Per-user cooldown
+    if request.author_id in _user_cooldowns:
+        elapsed = now - _user_cooldowns[request.author_id]
+        if elapsed < USER_COOLDOWN_SECONDS:
+            wait_min = int((USER_COOLDOWN_SECONDS - elapsed) / 60)
+            return f"rate_limit:user (try again in ~{wait_min}min)"
+
+    # 3. Duplicate target
+    norm = _normalize_target(request.target_display)
+    if norm in _target_cooldowns:
+        existing_id, _ = _target_cooldowns[norm]
+        return f"duplicate_target:{existing_id}"
+
+    return None
+
 
 async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str | None:
     """
@@ -68,6 +127,8 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
     Does quick analysis + tweet thread. Full analysis deferred to page visit.
     Returns the report_id on success, None on failure.
     """
+    global _last_analysis_time
+
     if request.tweet_id in _processed_tweets:
         logger.debug(f"Skipping already-processed tweet {request.tweet_id}")
         return None
@@ -77,6 +138,37 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
         to_remove = list(_processed_tweets)[:1000]
         for t in to_remove:
             _processed_tweets.discard(t)
+
+    # --- Anti-spam checks ---
+    spam_reason = _check_spam(request)
+    if spam_reason:
+        if spam_reason.startswith("duplicate_target:"):
+            existing_id = spam_reason.split(":")[1]
+            logger.info(f"[ANTI-SPAM] Duplicate target from @{request.author_username} — pointing to existing report {existing_id}")
+            if settings.has_twitter_write:
+                report_url = f"https://www.mckoutie.com/report/{existing_id}"
+                reply = (
+                    f"Hey @{request.author_username}, we already analyzed that one recently!\n\n"
+                    f"Check out the full dashboard here:\n{report_url}"
+                )
+                poller.reply_to_tweet(request.tweet_id, reply)
+            return None
+        elif spam_reason.startswith("rate_limit:user"):
+            logger.info(f"[ANTI-SPAM] User cooldown for @{request.author_username}: {spam_reason}")
+            if settings.has_twitter_write:
+                reply = (
+                    f"@{request.author_username} our capybaras need a coffee break between analyses. "
+                    f"Try again in about an hour!"
+                )
+                poller.reply_to_tweet(request.tweet_id, reply)
+            return None
+        else:
+            logger.info(f"[ANTI-SPAM] Blocked: {spam_reason} (from @{request.author_username})")
+            return None
+
+    # Record rate limit timestamps
+    _last_analysis_time = time.time()
+    _user_cooldowns[request.author_id] = time.time()
 
     report_id = generate_report_id(request.target_display)
     startup_name = request.target_display
@@ -185,6 +277,10 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
             db.update_report(report_id, status="skeleton", startup_name=startup_name)
         except Exception as e:
             logger.warning(f"Supabase status update failed (non-fatal): {e}")
+
+        # Register target cooldown so same URL isn't re-analyzed within 24h
+        norm_target = _normalize_target(request.target_display)
+        _target_cooldowns[norm_target] = (report_id, time.time())
 
         logger.info(f"[PHASE 1] Complete for {startup_name} (report={report_id}). Awaiting page visit for deep analysis.")
         return report_id
@@ -478,7 +574,9 @@ def _post_teaser_thread(
             logger.warning(f"Failed to post tweet {i+1} of thread (returned None)")
             break
         if i < len(tweets) - 1:
-            time.sleep(1.5)
+            delay = random.uniform(2.0, 5.0)
+            logger.info(f"Thread delay: {delay:.1f}s before next tweet")
+            time.sleep(delay)
 
     return reply_ids
 

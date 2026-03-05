@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,7 +16,9 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-REPORTS_DIR = Path(__file__).parent.parent.parent / "reports"
+# Use Railway persistent volume if available, else local
+_data_dir = Path("/data")
+REPORTS_DIR = _data_dir / "reports" if _data_dir.is_dir() else Path(__file__).parent.parent.parent / "reports"
 
 
 def generate_report_id(startup_name: str, timestamp: str | None = None) -> str:
@@ -25,10 +28,62 @@ def generate_report_id(startup_name: str, timestamp: str | None = None) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
+_HEADLINE_VARIANTS = [
+    "mckoutie just analyzed {name}.",
+    "Fresh off the capybara desk: {name} breakdown.",
+    "The mckoutie team just ran {name} through the traction engine.",
+    "New analysis dropped: {name}.",
+    "{name} just got the mckoutie treatment.",
+]
+
+_CHANNEL_INTROS = [
+    "Top 3 growth channels for {name}:",
+    "Where {name} should focus first:",
+    "The 3 highest-leverage channels for {name}:",
+    "mckoutie's top picks for {name}:",
+    "If {name} only had 90 days, here's where to bet:",
+]
+
+_HOT_TAKE_INTROS = [
+    "Hot take on {name}:",
+    "The thing nobody's telling {name}:",
+    "Unprompted opinion on {name}:",
+    "mckoutie's spicy take on {name}:",
+    "Here's the uncomfortable truth about {name}:",
+]
+
+_CTA_VARIANTS = [
+    (
+        "Full 19-channel analysis for {name}:\n"
+        "- 90-day action plan\n"
+        "- 10 potential leads + 10 investors\n"
+        "- Specific tactics per channel\n\n"
+        "Sign up to see the live dashboard\n\n"
+        "{report_link}"
+    ),
+    (
+        "Want the full playbook for {name}?\n\n"
+        "19 channels scored + ranked\n"
+        "Real leads + real investors\n"
+        "90-day action plan with budget\n\n"
+        "Dashboard here:\n{report_link}"
+    ),
+    (
+        "The full {name} strategy brief includes:\n"
+        "- 19 traction channels analyzed\n"
+        "- Potential customers found\n"
+        "- Investor matches\n"
+        "- Step-by-step 90-day plan\n\n"
+        "{report_link}"
+    ),
+]
+
+
 def generate_teaser_from_quick(quick: dict) -> list[str]:
     """
     Generate 3-4 tweet thread from QUICK analysis (Haiku output).
     Uses top_3_channels format instead of full bullseye/channel_analysis.
+    Randomizes phrasing so no two threads look identical (anti-spam).
     """
     profile = quick.get("company_profile", {})
     name = profile.get("name", "Your startup")
@@ -37,8 +92,9 @@ def generate_teaser_from_quick(quick: dict) -> list[str]:
     hot_take = quick.get("hot_take", "")
     top_channels = quick.get("top_3_channels", [])
 
-    # Tweet 1: The headline
-    tweet1 = f"mckoutie just analyzed {name}.\n\n"
+    # Tweet 1: The headline (randomized)
+    headline = random.choice(_HEADLINE_VARIANTS).format(name=name)
+    tweet1 = f"{headline}\n\n"
     if one_liner:
         tweet1 += f"{one_liner}\n\n"
     tweet1 += f"Stage: {stage}\n"
@@ -46,32 +102,26 @@ def generate_teaser_from_quick(quick: dict) -> list[str]:
         tweet1 += f"Edge: {profile['unique_angle'][:120]}\n"
     tweet1 += "\nFull analysis incoming"
 
-    # Tweet 2: Top channels
-    tweet2 = f"Top 3 growth channels for {name}:\n\n"
+    # Tweet 2: Top channels (randomized intro)
+    channel_intro = random.choice(_CHANNEL_INTROS).format(name=name)
+    tweet2 = f"{channel_intro}\n\n"
     for i, ch in enumerate(top_channels[:3], 1):
         ch_name = ch.get("channel", "?")
         score = ch.get("score", "?")
-        why = ch.get("one_liner_why", "")
         tweet2 += f"{i}. {ch_name} ({score}/10)\n"
     if top_channels and top_channels[0].get("one_liner_why"):
         tweet2 += f"\n{top_channels[0]['one_liner_why'][:140]}"
 
-    # Tweet 3: Hot take
+    # Tweet 3: Hot take (randomized intro)
     tweet3 = ""
     if hot_take:
-        if len(hot_take) > 260:
-            hot_take = hot_take[:257] + "..."
-        tweet3 = f"Hot take on {name}:\n\n{hot_take}"
+        if len(hot_take) > 240:
+            hot_take = hot_take[:237] + "..."
+        ht_intro = random.choice(_HOT_TAKE_INTROS).format(name=name)
+        tweet3 = f"{ht_intro}\n\n{hot_take}"
 
-    # Tweet 4: CTA
-    tweet4 = (
-        f"Full 19-channel analysis for {name}:\n"
-        f"- 90-day action plan\n"
-        f"- 10 potential leads + 10 investors\n"
-        f"- Specific tactics per channel\n\n"
-        f"Sign up to see the live dashboard\n\n"
-        f"{{report_link}}"
-    )
+    # Tweet 4: CTA (randomized)
+    tweet4 = random.choice(_CTA_VARIANTS).format(name=name, report_link="{report_link}")
 
     tweets = [tweet1, tweet2, tweet3, tweet4]
     cleaned = []
