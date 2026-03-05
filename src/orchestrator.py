@@ -33,6 +33,7 @@ from src.analysis.report_generator import (
     generate_full_report_markdown,
     save_report,
 )
+from src.modules import db
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,19 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
         status="analyzing",
     )
     save_record(record)
+
+    # Sync to Supabase (non-blocking, best-effort)
+    try:
+        db.create_report(
+            report_id=report_id,
+            startup_name=startup_name,
+            target=request.target_display,
+            tweet_id=request.tweet_id,
+            author_twitter_id=request.author_id,
+            author_username=request.author_username,
+        )
+    except Exception as e:
+        logger.warning(f"Supabase report create failed (non-fatal): {e}")
 
     # 2. Immediate acknowledgment on Twitter (BEFORE any analysis starts)
     if settings.has_twitter_write:
@@ -235,12 +249,27 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
             checkout_url=checkout_url or report_url,
         )
 
+        # Sync final status to Supabase
+        try:
+            db.update_report(
+                report_id,
+                status="ready",
+                startup_name=startup_name,
+                checkout_url=checkout_url or report_url,
+            )
+        except Exception as e:
+            logger.warning(f"Supabase status update failed (non-fatal): {e}")
+
         logger.info(f"Report {report_id} complete for {startup_name}")
         return report_id
 
     except Exception as e:
         logger.error(f"Failed to process request {request.tweet_id}: {e}")
         update_status(report_id, "failed", error=str(e))
+        try:
+            db.update_report(report_id, status="failed", error=str(e)[:500])
+        except Exception:
+            pass
 
         # Notify the user on Twitter (if we can write)
         if settings.has_twitter_write:

@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import settings
-from src.modules import auth, payments, report_store
+from src.modules import auth, payments, report_store, db
 from src.country_pages import COUNTRIES, render_country_page
 from src.analysis.report_generator import generate_report_html
 from src.analysis.dashboard_renderer import render_dashboard
@@ -1388,22 +1388,30 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     checkout_url = record.checkout_url or "#"
     upgrade_url = "#"
 
-    if logged_in and record.status in ("active", "paid"):
+    if logged_in:
         user_twitter_id = user.get("twitter_id", "")
         is_owner = (
             user_twitter_id == record.author_id
             or user_twitter_id == record.subscriber_twitter_id
         )
 
-        if is_owner:
+        if is_owner and record.status in ("active", "paid"):
             tier = record.tier or "starter"
+        elif is_owner:
+            # Check Supabase for active subscription (in case file record is stale)
+            try:
+                sub = db.get_subscription_for_report(report_id, user_twitter_id)
+                if sub and sub.get("status") == "active":
+                    tier = sub.get("tier", "starter")
+            except Exception:
+                pass
 
-            if tier == "starter" and settings.has_payments:
-                upgrade_url = payments.create_upgrade_session(
-                    report_id=report_id,
-                    startup_name=record.startup_name,
-                    customer_id=record.customer_id,
-                ) or "#"
+        if is_owner and tier == "starter" and settings.has_payments:
+            upgrade_url = payments.create_upgrade_session(
+                report_id=report_id,
+                startup_name=record.startup_name,
+                customer_id=record.customer_id,
+            ) or "#"
 
     # Always render the dashboard — overlay login gate if not authenticated
     html = render_dashboard_v5(
@@ -1442,15 +1450,30 @@ async def stripe_webhook(request: Request):
         tier = metadata.get("tier", "starter")
 
         if report_id:
+            now_iso = datetime.now(tz=timezone.utc).isoformat()
             report_store.update_status(
                 report_id,
                 "active",
-                paid_at=datetime.now(tz=timezone.utc).isoformat(),
+                paid_at=now_iso,
                 subscription_id=subscription_id,
                 customer_id=customer_id,
                 subscriber_twitter_id=twitter_id,
                 tier=tier,
             )
+            # Sync to Supabase
+            try:
+                db.update_report(report_id, status="active", tier=tier, paid_at=now_iso)
+                if twitter_id:
+                    db.update_user_stripe(twitter_id, customer_id)
+                    db.create_subscription(
+                        twitter_id=twitter_id,
+                        report_id=report_id,
+                        stripe_subscription_id=subscription_id,
+                        stripe_customer_id=customer_id,
+                        tier=tier,
+                    )
+            except Exception as e:
+                logger.warning(f"Supabase sync failed (non-fatal): {e}")
             logger.info(f"Subscription started for report {report_id} (tier={tier})")
 
     elif event_type == "customer.subscription.deleted":
@@ -1459,6 +1482,13 @@ async def stripe_webhook(request: Request):
         report_id = metadata.get("report_id")
         if report_id:
             report_store.update_status(report_id, "canceled")
+            try:
+                db.update_report(report_id, status="canceled")
+                sub_id = obj.get("id", "")
+                if sub_id:
+                    db.cancel_subscription_by_stripe_id(sub_id)
+            except Exception as e:
+                logger.warning(f"Supabase sync failed (non-fatal): {e}")
             logger.info(f"Subscription canceled for report {report_id}")
 
     elif event_type == "invoice.payment_failed":
@@ -1469,6 +1499,10 @@ async def stripe_webhook(request: Request):
             for record in report_store.list_reports(status="active"):
                 if record.subscription_id == sub_id:
                     report_store.update_status(record.report_id, "ready")
+                    try:
+                        db.update_report(record.report_id, status="ready")
+                    except Exception:
+                        pass
                     logger.warning(f"Payment failed for report {record.report_id}")
                     break
 

@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""
     stripe_price_id: str = ""  # recurring price ID (created on first checkout if empty)
 
+    # Supabase
+    supabase_url: str = ""
+    supabase_key: str = ""  # service_role key for server-side operations
+
     # Scraping
     exa_api_key: str = ""
     firecrawl_api_key: str = ""
@@ -92,6 +96,10 @@ class Settings(BaseSettings):
     @property
     def has_payments(self) -> bool:
         return bool(self.stripe_secret_key)
+
+    @property
+    def has_supabase(self) -> bool:
+        return bool(self.supabase_url and self.supabase_key)
 
     @property
     def has_scraping(self) -> bool:

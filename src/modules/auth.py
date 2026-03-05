@@ -176,10 +176,21 @@ async def exchange_code(code: str, state: str) -> dict | None:
                 return None
 
             user_data = user_resp.json().get("data", {})
+            twitter_id = user_data.get("id", "")
+            username = user_data.get("username", "")
+            name = user_data.get("name", "")
+
+            # Upsert user to Supabase (fire-and-forget, non-blocking)
+            try:
+                from src.modules.db import upsert_user
+                upsert_user(twitter_id, username, name)
+            except Exception as db_err:
+                logger.warning(f"Supabase upsert failed (non-fatal): {db_err}")
+
             return {
-                "twitter_id": user_data.get("id", ""),
-                "username": user_data.get("username", ""),
-                "name": user_data.get("name", ""),
+                "twitter_id": twitter_id,
+                "username": username,
+                "name": name,
                 "redirect_after": pending.get("redirect_after", "/"),
             }
 
