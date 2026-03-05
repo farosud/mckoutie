@@ -156,6 +156,9 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
 
         # 6. Generate teaser tweets from quick analysis
         teaser_tweets = generate_teaser_from_quick(quick)
+        logger.info(f"Generated {len(teaser_tweets)} teaser tweets")
+        for i, t in enumerate(teaser_tweets):
+            logger.info(f"  Tweet {i+1} ({len(t)} chars): {t[:80]}...")
 
         # 7. Fill in report link
         report_url = f"https://www.mckoutie.com/report/{report_id}"
@@ -164,7 +167,9 @@ async def handle_request(request: AnalysisRequest, poller: TwitterPoller) -> str
 
         # 8. Post teaser thread
         if settings.has_twitter_write:
-            _post_teaser_thread(poller, request.tweet_id, teaser_tweets)
+            logger.info(f"Posting teaser thread ({len(teaser_tweets)} tweets) as reply to {request.tweet_id}")
+            posted_ids = _post_teaser_thread(poller, request.tweet_id, teaser_tweets)
+            logger.info(f"Thread posted: {len(posted_ids)} tweets succeeded")
         else:
             logger.info("Twitter write disabled — teaser thread saved but not posted")
 
@@ -456,14 +461,21 @@ def _post_teaser_thread(
 
     for i, text in enumerate(tweets):
         if not text:
+            logger.warning(f"Skipping empty tweet {i+1}")
             continue
         tweet_media = media_ids if (i == 0 and media_ids) else None
-        reply_id = poller.reply_to_tweet(parent_id, text, media_ids=tweet_media)
+        logger.info(f"Posting tweet {i+1}/{len(tweets)} ({len(text)} chars) replying to {parent_id}")
+        try:
+            reply_id = poller.reply_to_tweet(parent_id, text, media_ids=tweet_media)
+        except Exception as e:
+            logger.error(f"Exception posting tweet {i+1}: {e}")
+            break
         if reply_id:
             reply_ids.append(reply_id)
             parent_id = reply_id
+            logger.info(f"Tweet {i+1} posted: {reply_id}")
         else:
-            logger.warning(f"Failed to post tweet {i+1} of thread")
+            logger.warning(f"Failed to post tweet {i+1} of thread (returned None)")
             break
         if i < len(tweets) - 1:
             time.sleep(1.5)
