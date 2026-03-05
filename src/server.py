@@ -1521,68 +1521,73 @@ async def _handle_analyze(request: Request):
         except Exception as e:
             logger.warning(f"Supabase report create failed (non-fatal): {e}")
 
-        # Scrape + quick analysis in background, save skeleton
-        try:
-            from src.modules.scraper import scrape_website
-            from src.analysis.traction_engine import run_quick_analysis
+        # Save a bare skeleton immediately so the report page works
+        # Deep analysis will happen later when user visits the report
+        skeleton_data = {
+            "company_profile": {"name": raw_url},
+            "top_3_channels": [],
+            "hot_take": "",
+            "channel_analysis": [],
+            "bullseye_ranking": {},
+            "ninety_day_plan": {},
+            "budget_allocation": {},
+            "risk_matrix": [],
+            "competitive_moat": "",
+            "executive_summary": "",
+            "leads_research": {},
+            "investor_research": {},
+            "_startup_data": f"## WEBSITE DATA\nURL: {raw_url}",
+            "_phase": "skeleton",
+        }
+        save_report(report_id, skeleton_data, "")
 
-            site_data = await scrape_website(raw_url)
-            startup_data = ""
-            if site_data.get("content") and len(site_data["content"]) > 50:
-                parts = [f"## WEBSITE DATA\nURL: {site_data['url']}"]
-                if site_data.get("title"):
-                    parts.append(f"Title: {site_data['title']}")
-                if site_data.get("description"):
-                    parts.append(f"Description: {site_data['description']}")
-                parts.append(f"\nContent:\n{site_data['content'][:8000]}")
-                startup_data = "\n".join(parts)
-
-            if startup_data:
-                quick = await run_quick_analysis(startup_data)
-                profile = quick.get("company_profile", {})
-                startup_name = profile.get("name", raw_url)
-
-                skeleton_data = {
-                    "company_profile": profile,
-                    "top_3_channels": quick.get("top_3_channels", []),
-                    "hot_take": quick.get("hot_take", ""),
-                    "channel_analysis": [],
-                    "bullseye_ranking": {},
-                    "ninety_day_plan": {},
-                    "budget_allocation": {},
-                    "risk_matrix": [],
-                    "competitive_moat": "",
-                    "executive_summary": "",
-                    "leads_research": {},
-                    "investor_research": {},
-                    "_startup_data": startup_data,
-                    "_phase": "skeleton",
-                }
-                save_report(report_id, skeleton_data, "")
+        # Kick off scrape + quick analysis in background (non-blocking)
+        async def _bg_quick_analyze(rid: str, url: str):
+            try:
+                from src.modules.scraper import scrape_website
+                from src.analysis.traction_engine import run_quick_analysis
                 from src.modules.report_store import update_status
-                update_status(report_id, "skeleton", startup_name=startup_name)
-            else:
-                skeleton_data = {
-                    "company_profile": {"name": raw_url},
-                    "top_3_channels": [],
-                    "hot_take": "",
-                    "channel_analysis": [],
-                    "bullseye_ranking": {},
-                    "ninety_day_plan": {},
-                    "budget_allocation": {},
-                    "risk_matrix": [],
-                    "competitive_moat": "",
-                    "executive_summary": "",
-                    "leads_research": {},
-                    "investor_research": {},
-                    "_startup_data": f"## WEBSITE DATA\nURL: {raw_url}\n(scraping failed or returned no content)",
-                    "_phase": "skeleton",
-                }
-                save_report(report_id, skeleton_data, "")
-        except Exception as e:
-            logger.warning(f"Quick analysis from web failed (non-fatal): {e}")
 
-        # Redirect to Twitter login → then to report page
+                site_data = await scrape_website(url)
+                if site_data.get("content") and len(site_data["content"]) > 50:
+                    parts = [f"## WEBSITE DATA\nURL: {site_data['url']}"]
+                    if site_data.get("title"):
+                        parts.append(f"Title: {site_data['title']}")
+                    if site_data.get("description"):
+                        parts.append(f"Description: {site_data['description']}")
+                    parts.append(f"\nContent:\n{site_data['content'][:8000]}")
+                    startup_data = "\n".join(parts)
+
+                    quick = await run_quick_analysis(startup_data)
+                    profile = quick.get("company_profile", {})
+                    startup_name = profile.get("name", url)
+
+                    enriched = {
+                        "company_profile": profile,
+                        "top_3_channels": quick.get("top_3_channels", []),
+                        "hot_take": quick.get("hot_take", ""),
+                        "channel_analysis": [],
+                        "bullseye_ranking": {},
+                        "ninety_day_plan": {},
+                        "budget_allocation": {},
+                        "risk_matrix": [],
+                        "competitive_moat": "",
+                        "executive_summary": "",
+                        "leads_research": {},
+                        "investor_research": {},
+                        "_startup_data": startup_data,
+                        "_phase": "skeleton",
+                    }
+                    save_report(rid, enriched, "")
+                    update_status(rid, "skeleton", startup_name=startup_name)
+                    logger.info(f"[ANALYZE] Background quick analysis done for {rid}")
+            except Exception as e:
+                logger.warning(f"[ANALYZE] Background quick analysis failed (non-fatal): {e}")
+
+        import asyncio
+        asyncio.create_task(_bg_quick_analyze(report_id, raw_url))
+
+        # Redirect to Twitter login immediately (don't wait for analysis)
         login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
         logger.info(f"[ANALYZE] Redirecting to {login_url}")
         return RedirectResponse(login_url, status_code=303)
