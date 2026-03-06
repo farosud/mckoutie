@@ -1620,22 +1620,17 @@ async def poll_deep_progress(request: Request, report_id: str):
     if is_deep_analysis_running(report_id):
         return JSONResponse({"status": "Analysis starting...", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
 
-    # If analysis hasn't started and report is still a skeleton, start it now
-    # BUT only if startup_data has been enriched (scrape finished)
+    # If analysis hasn't started and report is still a skeleton, start it now.
+    # Deep analysis handles scraping internally — don't gate on startup_data length here.
     if not is_deep_analysis_running(report_id):
         analysis_path = REPORTS_DIR / report_id / "analysis.json"
         if analysis_path.exists():
             try:
                 analysis_check = json.loads(analysis_path.read_text())
                 if analysis_check.get("_phase") != "complete":
-                    sd = analysis_check.get("_startup_data", "")
-                    if sd and sd.strip().count("\n") >= 3 and len(sd) > 200:
-                        logger.info(f"[PROGRESS] Starting deep analysis for {report_id} via polling safety net")
-                        asyncio.create_task(run_deep_analysis_background(report_id))
-                        return JSONResponse({"status": "starting", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
-                    else:
-                        logger.info(f"[PROGRESS] Startup data not ready yet for {report_id} ({len(sd)} chars), waiting for scrape")
-                        return JSONResponse({"status": "Scraping website content...", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
+                    logger.info(f"[PROGRESS] Starting deep analysis for {report_id} via polling safety net")
+                    asyncio.create_task(run_deep_analysis_background(report_id))
+                    return JSONResponse({"status": "starting", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
             except Exception:
                 pass
 

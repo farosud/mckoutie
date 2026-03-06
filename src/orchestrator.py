@@ -360,15 +360,15 @@ async def run_deep_analysis(report_id: str):
             yield {"event": "error", "data": {"message": "Missing startup data"}}
             return
 
-        # If startup_data is just a bare URL (no scraped content), wait for the
-        # background scrape to finish enriching it. This fixes the race condition
-        # where deep analysis starts before the background quick analysis completes.
+        # If startup_data is just a bare URL (no scraped content), scrape it directly.
+        # Don't wait 60s for a background task — just do it inline.
         if startup_data.strip().count("\n") < 3 and len(startup_data) < 200:
-            logger.info(f"[DEEP] Startup data looks bare ({len(startup_data)} chars), waiting for scrape to finish...")
-            yield {"event": "thinking", "data": {"message": "Scraping website data...", "detail": "Waiting for website content to be available"}}
-            for _wait in range(60):  # up to 60 seconds
+            logger.info(f"[DEEP] Startup data looks bare ({len(startup_data)} chars), scraping directly...")
+            yield {"event": "thinking", "data": {"message": "Scraping website data...", "detail": "Fetching content from the site"}}
+
+            # First: quick check if background task already enriched the file (give it 5s)
+            for _wait in range(5):
                 await asyncio.sleep(1)
-                # Re-read the skeleton from disk (background task updates it)
                 try:
                     with open(analysis_path) as f2:
                         refreshed = json.load(f2)
@@ -376,19 +376,20 @@ async def run_deep_analysis(report_id: str):
                     if new_data and new_data.strip().count("\n") >= 3 and len(new_data) > 200:
                         startup_data = new_data
                         skeleton = refreshed
-                        logger.info(f"[DEEP] Startup data enriched ({len(startup_data)} chars), proceeding with analysis")
+                        logger.info(f"[DEEP] Background scrape finished ({len(startup_data)} chars)")
                         break
                 except Exception:
                     pass
-                if _wait % 10 == 0 and _wait > 0:
-                    yield {"event": "thinking", "data": {"message": f"Still scraping website... ({_wait}s)", "detail": "Extracting content from the site"}}
-            else:
-                # Timeout — try to scrape directly as a last resort
-                logger.warning(f"[DEEP] Startup data still bare after 60s, attempting direct scrape")
-                yield {"event": "thinking", "data": {"message": "Direct scraping...", "detail": "Background scrape may have failed, trying directly"}}
+
+            # If still bare, scrape directly (don't wait any longer)
+            if startup_data.strip().count("\n") < 3 and len(startup_data) < 200:
+                logger.info(f"[DEEP] Background scrape didn't finish, scraping directly now")
                 try:
                     from src.modules.scraper import scrape_website
-                    target_url = startup_data.replace("## WEBSITE DATA\nURL: ", "").strip()
+                    import re as _re
+                    # Extract URL from startup_data (format: "## WEBSITE DATA\nURL: https://...")
+                    url_match = _re.search(r'https?://\S+', startup_data)
+                    target_url = url_match.group(0) if url_match else startup_data.strip()
                     if target_url.startswith("http"):
                         site_data = await scrape_website(target_url)
                         if site_data.get("content") and len(site_data["content"]) > 100:
@@ -400,11 +401,17 @@ async def run_deep_analysis(report_id: str):
                             parts.append(f"\nContent:\n{site_data['content'][:8000]}")
                             startup_data = "\n".join(parts)
                             logger.info(f"[DEEP] Direct scrape succeeded ({len(startup_data)} chars)")
+                            # Save enriched data back to skeleton so it's not bare next time
+                            skeleton["_startup_data"] = startup_data
+                            try:
+                                analysis_path.write_text(json.dumps(skeleton))
+                            except Exception:
+                                pass
                 except Exception as e:
-                    logger.error(f"[DEEP] Direct scrape also failed: {e}")
+                    logger.error(f"[DEEP] Direct scrape failed: {e}")
 
             if startup_data.strip().count("\n") < 3 and len(startup_data) < 200:
-                logger.error(f"No usable startup data after waiting for {report_id}")
+                logger.error(f"No usable startup data after scraping for {report_id}")
                 yield {"event": "error", "data": {"message": "Could not retrieve website content. Please try again."}}
                 return
 
