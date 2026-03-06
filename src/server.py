@@ -601,18 +601,12 @@ async def auth_twitter_callback(request: Request, code: str = "", state: str = "
     })
 
     redirect_to = user_info.get("redirect_after", "/")
-    response = RedirectResponse(redirect_to)
-    response.set_cookie(
-        "mckoutie_session",
-        token,
-        max_age=30 * 24 * 3600,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        domain=".mckoutie.com",
-        path="/",
-    )
-    return response
+    # Vercel rewrites strip Set-Cookie headers from external backends.
+    # Pass the JWT as a URL parameter instead — client-side JS will set the cookie.
+    separator = "&" if "?" in redirect_to else "?"
+    redirect_with_token = f"{redirect_to}{separator}_token={token}"
+    logger.info(f"[AUTH] Passing token via URL for @{user_info.get('username')}, redirecting to {redirect_to}")
+    return RedirectResponse(redirect_with_token)
 
 
 @app.get("/auth/logout")
@@ -1210,7 +1204,9 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     If the report is in 'skeleton' status and the user is logged in,
     the dashboard will connect to the SSE stream to receive live deep analysis.
     """
-    logger.info(f"[REPORT VIEW] report_id={report_id}, cookies={list(request.cookies.keys())}")
+    cookie_keys = list(request.cookies.keys())
+    raw_cookie_header = request.headers.get("cookie", "")
+    logger.info(f"[REPORT VIEW] report_id={report_id}, cookies={cookie_keys}, raw_cookie_len={len(raw_cookie_header)}, has_session={'mckoutie_session' in raw_cookie_header}")
     record = report_store.load_record(report_id)
 
     if not record:

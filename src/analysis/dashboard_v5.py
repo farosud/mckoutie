@@ -1283,6 +1283,23 @@ def _section_footer(name):
 # ═══════════════════════════════════════════════
 def _js():
     return """
+// --- Token-from-URL cookie setter ---
+// Vercel rewrites strip Set-Cookie from Railway, so OAuth passes JWT via ?_token=
+(function(){
+  var params = new URLSearchParams(window.location.search);
+  var tok = params.get('_token');
+  if(tok){
+    document.cookie = 'mckoutie_session=' + tok + ';path=/;max-age=' + (30*24*3600) + ';secure;samesite=lax';
+    params.delete('_token');
+    var clean = window.location.pathname;
+    var remaining = params.toString();
+    if(remaining) clean += '?' + remaining;
+    window.history.replaceState({}, '', clean);
+    // Reload so server sees the cookie on next request
+    window.location.reload();
+  }
+})();
+
 // Channel accordion toggle
 function toggleChannel(id){
   var row=document.getElementById(id);
