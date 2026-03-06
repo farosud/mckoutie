@@ -1287,6 +1287,24 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
 
     # Determine if this is a skeleton report that needs deep analysis
     is_skeleton = analysis.get("_phase") == "skeleton" or record.status == "skeleton"
+
+    # Also detect "complete but empty" — deep analysis ran but channels were empty.
+    # This happens when the LLM returned a malformed response. Allow re-trigger.
+    is_complete_but_empty = (
+        analysis.get("_phase") == "complete"
+        and len(analysis.get("channel_analysis", [])) == 0
+    )
+    if is_complete_but_empty:
+        logger.warning(f"[REPORT VIEW] Report {report_id} is 'complete' but has 0 channels — resetting to skeleton for re-analysis")
+        analysis["_phase"] = "skeleton"
+        is_skeleton = True
+        # Save the reset phase so the SSE endpoint also sees it
+        analysis_path = REPORTS_DIR / report_id / "analysis.json"
+        try:
+            analysis_path.write_text(json.dumps(analysis))
+        except Exception as e:
+            logger.error(f"Failed to reset analysis phase: {e}")
+
     # Enable streaming for ANY skeleton report — login is checked by the overlay,
     # but if someone got past it (or came back with a cookie), always stream.
     should_stream = is_skeleton
@@ -1552,7 +1570,51 @@ async def poll_deep_progress(request: Request, report_id: str):
     # Check in-memory progress (includes granular channels/leads/investors)
     progress = get_deep_progress(report_id)
     if progress:
-        return JSONResponse(progress)
+        # Normalize: ensure flat top-level arrays exist (client JS expects d.channels, d.leads, etc.)
+        # If flat arrays are empty but sections have data, extract from sections.
+        normalized = dict(progress)
+        sections = normalized.get("sections", {})
+
+        if not normalized.get("channels") and "channels" in sections:
+            ch_sec = sections["channels"]
+            if isinstance(ch_sec, dict):
+                normalized["channels"] = sorted(
+                    ch_sec.get("channel_analysis", []),
+                    key=lambda c: c.get("score", 0),
+                    reverse=True,
+                )
+                # Also extract channels_meta from section data
+                if "channels_meta" not in sections:
+                    sections["channels_meta"] = {
+                        "bullseye_ranking": ch_sec.get("bullseye_ranking", {}),
+                        "executive_summary": ch_sec.get("executive_summary", ""),
+                        "hot_take": ch_sec.get("hot_take", ""),
+                        "company_profile": ch_sec.get("company_profile", {}),
+                    }
+
+        if not normalized.get("personas") and "leads" in sections:
+            leads_sec = sections["leads"]
+            if isinstance(leads_sec, dict):
+                normalized["personas"] = leads_sec.get("personas", [])
+                if not normalized.get("leads"):
+                    normalized["leads"] = leads_sec.get("leads", [])
+
+        if not normalized.get("leads") and "leads" in sections:
+            leads_sec = sections["leads"]
+            if isinstance(leads_sec, dict):
+                normalized["leads"] = leads_sec.get("leads", [])
+
+        if not normalized.get("competitors") and "investors" in sections:
+            inv_sec = sections["investors"]
+            if isinstance(inv_sec, dict):
+                normalized["competitors"] = inv_sec.get("competitors", [])
+
+        if not normalized.get("investors") and "investors" in sections:
+            inv_sec = sections["investors"]
+            if isinstance(inv_sec, dict):
+                normalized["investors"] = inv_sec.get("competitor_investors", []) + inv_sec.get("market_investors", [])
+
+        return JSONResponse(normalized)
 
     # Not started yet — start it as a safety net (in case page load and SSE both missed it)
     if is_deep_analysis_running(report_id):

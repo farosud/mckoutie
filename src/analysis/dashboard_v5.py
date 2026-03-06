@@ -1814,9 +1814,29 @@ def _streaming_js():
   }
 
   function showError(msg){
-    setStatus('Analysis hit a snag: '+(msg||'unknown error')+'. Try refreshing.');
+    var userMsg = msg || 'unknown error';
+    // Make error messages human-readable
+    if(userMsg.indexOf('502')>=0 || userMsg.indexOf('proxy')>=0){
+      userMsg = 'Our analysis server is temporarily restarting. Please refresh in 30 seconds.';
+    } else if(userMsg.indexOf('credits')>=0 || userMsg.indexOf('402')>=0){
+      userMsg = 'Analysis engine is temporarily at capacity. Please try again in a few minutes.';
+    } else if(userMsg.indexOf('timeout')>=0){
+      userMsg = 'Analysis took longer than expected. Please refresh to retry.';
+    } else if(userMsg.indexOf('empty')>=0 || userMsg.indexOf('0 channels')>=0){
+      userMsg = 'Could not extract enough data from the website. Try with a different URL.';
+    }
+    setStatus(userMsg);
     setThinking('');
     pips.forEach(function(p){ p.style.background='#ff4444'; });
+    // Add a retry button below the banner
+    if(banner){
+      var retryBtn = document.createElement('button');
+      retryBtn.textContent = 'Retry Analysis';
+      retryBtn.style.cssText = 'margin-top:8px;padding:8px 20px;background:var(--cyan,#00d4ff);color:#000;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px';
+      retryBtn.onclick = function(){ window.location.reload(); };
+      var container = banner.querySelector('div') || banner;
+      container.appendChild(retryBtn);
+    }
   }
 
 
@@ -2068,6 +2088,11 @@ def _streaming_js():
     console.log('[mckoutie] Polling started (primary data path)');
     doPoll();
   }
+
+  // CRITICAL: Start polling immediately on page load.
+  // Don't wait for SSE to fail — polling is the reliable path that
+  // always works through Vercel's same-origin proxy.
+  startPolling();
 
   function doPoll(){
     fetch('/report/'+rid+'/progress')

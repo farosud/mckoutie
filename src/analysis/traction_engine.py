@@ -312,7 +312,8 @@ async def _call_vps_proxy(
     logger.info(f"VPS proxy: {url}, model: {_model}, timeout: {timeout_seconds}s")
 
     last_error = None
-    for attempt in range(2):  # 2 attempts max — saves time on VPS failure
+    max_attempts = 4  # More retries — VPS 502s are often transient (proxy restarting)
+    for attempt in range(max_attempts):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=15.0)) as client:
                 resp = await client.post(
@@ -334,10 +335,13 @@ async def _call_vps_proxy(
                 if resp.status_code != 200:
                     body = resp.text
                     logger.error(
-                        f"VPS proxy returned {resp.status_code} on attempt {attempt + 1}/2: {body[:1000]}"
+                        f"VPS proxy returned {resp.status_code} on attempt {attempt + 1}/{max_attempts}: {body[:1000]}"
                     )
                     last_error = f"HTTP {resp.status_code}: {body[:500]}"
-                    await asyncio.sleep(3)
+                    # Exponential backoff: 3s, 6s, 12s, 24s
+                    backoff = 3 * (2 ** attempt)
+                    logger.info(f"VPS proxy retry in {backoff}s...")
+                    await asyncio.sleep(backoff)
                     continue
 
                 data = resp.json()
@@ -350,18 +354,18 @@ async def _call_vps_proxy(
                 return choices[0]["message"]["content"]
         except httpx.TimeoutException as e:
             last_error = f"timeout after {timeout_seconds}s ({type(e).__name__})"
-            logger.warning(f"VPS proxy timeout on attempt {attempt + 1}/2: {last_error}")
-            await asyncio.sleep(3)
+            logger.warning(f"VPS proxy timeout on attempt {attempt + 1}/{max_attempts}: {last_error}")
+            await asyncio.sleep(3 * (2 ** attempt))
         except httpx.ConnectError as e:
             last_error = f"connect error: {e}"
-            logger.warning(f"VPS proxy connect error on attempt {attempt + 1}/2: {last_error}")
-            await asyncio.sleep(3)
+            logger.warning(f"VPS proxy connect error on attempt {attempt + 1}/{max_attempts}: {last_error}")
+            await asyncio.sleep(3 * (2 ** attempt))
         except Exception as e:
             last_error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
-            logger.warning(f"VPS proxy error on attempt {attempt + 1}/2: {last_error}")
-            await asyncio.sleep(3)
+            logger.warning(f"VPS proxy error on attempt {attempt + 1}/{max_attempts}: {last_error}")
+            await asyncio.sleep(3 * (2 ** attempt))
 
-    raise RuntimeError(f"VPS proxy failed after 2 attempts: {last_error}")
+    raise RuntimeError(f"VPS proxy failed after {max_attempts} attempts: {last_error}")
 
 
 async def _call_openrouter(
@@ -418,6 +422,13 @@ async def _call_openrouter(
                     raise ValueError("Empty response from OpenRouter")
 
                 return choices[0]["message"]["content"]
+        except RuntimeError as e:
+            # Don't retry on RuntimeError (e.g. out of credits) — propagate immediately
+            if "out of credits" in str(e).lower():
+                raise
+            last_error = str(e)
+            logger.warning(f"OpenRouter error on attempt {attempt + 1}/3: {e}")
+            await asyncio.sleep(3)
         except Exception as e:
             last_error = str(e)
             logger.warning(f"OpenRouter error on attempt {attempt + 1}/3: {e}")
@@ -744,8 +755,21 @@ async def _generate_deep_dives(startup_data: str, analysis: dict, channels_batch
 
     text = None
 
-    # PRIMARY: OpenRouter Gemini Flash (fast + reliable)
-    if settings.openrouter_api_key:
+    # PRIMARY: VPS proxy Haiku (free, fast)
+    if settings.has_vps_proxy:
+        try:
+            text = await _call_vps_proxy(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="claude-sonnet-4",
+                max_tokens=8000,
+                timeout_seconds=120.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"VPS proxy failed for deep dives: {e}")
+
+    # FALLBACK: OpenRouter Gemini Flash
+    if text is None and settings.openrouter_api_key:
         try:
             text = await _call_openrouter(
                 prompt,
@@ -756,32 +780,6 @@ async def _generate_deep_dives(startup_data: str, analysis: dict, channels_batch
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Gemini Flash failed for deep dives: {e}")
-
-    # FALLBACK 1: VPS proxy Haiku
-    if text is None and settings.has_vps_proxy:
-        try:
-            text = await _call_vps_proxy(
-                prompt,
-                system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="claude-haiku-4-5-20251001",
-                max_tokens=8000,
-                timeout_seconds=90.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"VPS proxy Haiku failed for deep dives: {e}")
-
-    # FALLBACK 2: OpenRouter Haiku
-    if text is None and settings.openrouter_api_key:
-        try:
-            text = await _call_openrouter(
-                prompt,
-                system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="anthropic/claude-haiku-4.5",
-                max_tokens=8000,
-                timeout_seconds=60.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"OpenRouter Haiku failed for deep dives: {e}")
 
     if text is None:
         return {}
@@ -899,15 +897,26 @@ async def run_quick_analysis(startup_data: str) -> dict:
 async def run_core_analysis(startup_data: str) -> dict:
     """Phase A: Get company profile + 19 channel scores (no deep_dive).
 
-    Primary: Gemini Flash via OpenRouter (fast, reliable, cheap).
-    Fallback: VPS proxy Sonnet (free but slow).
+    Primary: VPS proxy Sonnet (free, Claude Max plan).
+    Fallback: OpenRouter Gemini Flash.
     """
     prompt = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
     text = None
 
-    # PRIMARY: OpenRouter Gemini Flash (fast + reliable — completes in 15-30s)
-    if settings.openrouter_api_key:
-        logger.info("[PHASE A] Running core analysis via OpenRouter (Gemini Flash)...")
+    # PRIMARY: VPS proxy Sonnet (free — Claude Max plan)
+    if settings.has_vps_proxy:
+        logger.info("[PHASE A] Running core analysis via VPS proxy (Sonnet)...")
+        try:
+            text = await _call_vps_proxy(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="claude-sonnet-4", max_tokens=12000, timeout_seconds=240.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
+
+    # FALLBACK: OpenRouter Gemini Flash
+    if text is None and settings.openrouter_api_key:
+        logger.info("[PHASE A] Falling back to OpenRouter (Gemini Flash)...")
         try:
             text = await _call_openrouter(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
@@ -915,17 +924,6 @@ async def run_core_analysis(startup_data: str) -> dict:
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Gemini Flash failed for Phase A: {e}")
-
-    # FALLBACK 1: VPS proxy Sonnet (free, but can be slow)
-    if text is None and settings.has_vps_proxy:
-        logger.info("[PHASE A] Falling back to VPS proxy (Sonnet)...")
-        try:
-            text = await _call_vps_proxy(
-                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="claude-sonnet-4", max_tokens=12000, timeout_seconds=180.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
 
     # LAST RESORT: Anthropic direct
     if text is None and settings.anthropic_api_key:

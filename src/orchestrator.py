@@ -636,7 +636,13 @@ async def run_deep_analysis(report_id: str):
             },
         }
 
-        # Mark as complete
+        # Only mark as complete if we actually got meaningful data
+        channels = analysis.get("channel_analysis", [])
+        if len(channels) == 0:
+            logger.warning(f"[PHASE 2] Analysis completed but 0 channels — keeping as skeleton for retry")
+            analysis["_phase"] = "skeleton"
+            yield {"event": "error", "data": {"message": "Analysis returned empty results. Please refresh to retry."}}
+            return
         analysis["_phase"] = "complete"
         # Remove raw startup data from stored analysis (no longer needed, saves space)
         analysis.pop("_startup_data", None)
