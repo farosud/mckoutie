@@ -72,6 +72,8 @@ CRITICAL INSTRUCTIONS — FOLLOW EXACTLY:
 - If the startup data is minimal, STILL produce the full analysis using your knowledge.
 - If you only have a URL and company name, use your training knowledge about similar companies/markets.
 - Your response MUST start with { and end with }.
+- All string values in the JSON MUST use escaped characters: use \\n for newlines, \\" for quotes inside strings.
+- Do NOT use unescaped newlines or unescaped double quotes inside JSON string values.
 - Any response that is not valid JSON is a FAILURE. Never explain, just output JSON."""
 
 ANALYSIS_PROMPT = """Analyze this startup and produce a full traction strategy report.
@@ -447,6 +449,18 @@ def _parse_json_response(text: str) -> dict:
     except json.JSONDecodeError:
         pass
 
+    # Try json_repair on the full text early (handles most LLM JSON issues)
+    try:
+        import json_repair
+        result = json_repair.loads(text)
+        if isinstance(result, dict) and len(result) > 1:
+            logger.info(f"json_repair succeeded on full text ({len(result)} keys)")
+            return result
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning(f"json_repair failed on full text: {e}")
+
     # Try markdown code block
     json_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
     if json_match:
@@ -475,6 +489,23 @@ def _parse_json_response(text: str) -> dict:
                 return json.loads(repaired)
             except json.JSONDecodeError:
                 pass
+
+            # More aggressive: try json_repair library
+            try:
+                import json_repair
+                result = json_repair.loads(candidate)
+                if isinstance(result, dict):
+                    logger.info("json_repair succeeded on candidate")
+                    return result
+                elif isinstance(result, list) and result and isinstance(result[0], dict):
+                    logger.info("json_repair returned list, using first element")
+                    return result[0]
+                else:
+                    logger.warning(f"json_repair returned unexpected type: {type(result)}")
+            except ImportError:
+                logger.warning("json_repair not installed")
+            except Exception as e:
+                logger.warning(f"json_repair failed on candidate: {e}")
 
             # If JSON is truncated (max_tokens hit), try to close it
             if not candidate.rstrip().endswith("}"):
@@ -909,7 +940,7 @@ async def run_core_analysis(startup_data: str) -> dict:
         try:
             text = await _call_openrouter(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="anthropic/claude-sonnet-4", max_tokens=12000, timeout_seconds=180.0,
+                model="anthropic/claude-sonnet-4", max_tokens=16000, timeout_seconds=180.0,
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Sonnet failed for Phase A: {e}")
@@ -920,7 +951,7 @@ async def run_core_analysis(startup_data: str) -> dict:
         try:
             text = await _call_vps_proxy(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="claude-sonnet-4", max_tokens=12000, timeout_seconds=240.0,
+                model="claude-sonnet-4", max_tokens=16000, timeout_seconds=300.0,
             )
         except RuntimeError as e:
             logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
@@ -931,7 +962,7 @@ async def run_core_analysis(startup_data: str) -> dict:
         try:
             text = await _call_openrouter(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="google/gemini-2.5-flash", max_tokens=12000, timeout_seconds=120.0,
+                model="google/gemini-2.5-flash", max_tokens=16000, timeout_seconds=120.0,
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Gemini Flash failed for Phase A: {e}")
@@ -940,6 +971,24 @@ async def run_core_analysis(startup_data: str) -> dict:
         return {"error": "No LLM provider available"}
 
     analysis = _parse_json_response(text)
+
+    # If parse failed, retry ONCE with a different model (JSON mode more likely to work)
+    if "error" in analysis and "raw_response" in analysis:
+        logger.warning("[PHASE A] JSON parse failed, retrying with VPS proxy...")
+        retry_text = None
+        if settings.has_vps_proxy:
+            try:
+                retry_text = await _call_vps_proxy(
+                    prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                    model="claude-sonnet-4", max_tokens=16000, timeout_seconds=300.0,
+                )
+            except Exception as e:
+                logger.warning(f"[PHASE A] VPS retry also failed: {e}")
+        if retry_text:
+            analysis = _parse_json_response(retry_text)
+        if "error" in analysis and "raw_response" in analysis:
+            logger.error("[PHASE A] Both parse attempts failed")
+
     # Ensure all channels have empty deep_dive placeholder
     for ch in analysis.get("channel_analysis", []):
         if "deep_dive" not in ch:

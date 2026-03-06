@@ -11,3 +11,4 @@ pydantic-settings>=2.6
 sse-starlette>=2.0
 supabase>=2.0
 python-multipart>=0.0.9
+json-repair>=0.30

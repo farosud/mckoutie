@@ -1616,9 +1616,9 @@ async def poll_deep_progress(request: Request, report_id: str):
 
         return JSONResponse(normalized)
 
-    # Not started yet — start it as a safety net (in case page load and SSE both missed it)
+    # Analysis is running but _deep_progress didn't have data yet (race condition on first poll)
     if is_deep_analysis_running(report_id):
-        return JSONResponse({"status": "running", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
+        return JSONResponse({"status": "Analysis starting...", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
 
     # If analysis hasn't started and report is still a skeleton, start it now
     # BUT only if startup_data has been enriched (scrape finished)

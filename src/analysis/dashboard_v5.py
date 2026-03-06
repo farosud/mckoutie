@@ -159,7 +159,7 @@ var __REPORT_DATA__={_report_json(analysis, startup_name, report_id, tier)};
 var __STREAMING__={'true' if streaming else 'false'};
 var __REPORT_ID__="{report_id}";
 var __TIER__="{tier}";
-var __SSE_BASE__="{sse_base_url}";
+// Polling-only mode (SSE was cross-origin and unreliable through Vercel proxy)
 {_js()}
 {_streaming_js() if streaming else ""}
 {_chat_widget_js(report_id)}
@@ -1840,240 +1840,15 @@ def _streaming_js():
   }
 
 
-  // ---------- SSE CONNECTION (true real-time streaming) ----------
+  // ---------- POLLING-ONLY DATA PATH ----------
+  // SSE was cross-origin (Railway) and got killed by Vercel proxy / CORS.
+  // Polling through same-origin Vercel proxy is 100% reliable.
 
   setStatus('Connecting to analysis engine...');
   setPip('channels','active');
 
-  // Connect SSE directly to Railway (bypasses Vercel proxy which kills SSE streams)
-  var sseBase = __SSE_BASE__ || '';
-  var es = new EventSource(sseBase+'/report/'+rid+'/stream');
   var channelsPhaseComplete = false;
-  var sseGotData = false;
 
-  // Safety net: if SSE delivers nothing in 480s, fall back to polling.
-  // VPS analysis can take 2-5 min depending on model load.
-  var sseTimeout = setTimeout(function(){
-    if(!sseGotData){
-      console.log('[mckoutie] SSE timeout — no data in 480s, switching to polling');
-      es.close();
-      setStatus('Analysis is taking longer than expected. Checking for results...');
-      startPolling();
-    }
-  }, 480000);
-
-  es.addEventListener('thinking', function(e){
-    sseGotData = true;
-    var d = JSON.parse(e.data);
-    setStatus(d.message||'');
-    setThinking(d.detail||'');
-    console.log('[mckoutie] SSE thinking:', d.message);
-  });
-
-  es.addEventListener('open', function(){
-    console.log('[mckoutie] SSE connection opened to:', sseBase+'/report/'+rid+'/stream');
-    sseGotData = true;
-  });
-
-  es.addEventListener('channel', function(e){
-    sseGotData = true;
-    try {
-      var d = JSON.parse(e.data);
-      var ch = d.channel;
-      if(!ch) return;
-      // RENDER the channel directly into the dashboard
-      channels.push(ch);
-      addChannelRow(ch, channelCount);
-      channelCount++;
-      setPip('channels','active');
-      if(channelCount >= 19) setPip('channels','done');
-      setStatus('Analyzing channels... ('+channelCount+'/19)');
-      console.log('[mckoutie] SSE channel #'+channelCount+':', ch.channel, ch.score);
-    } catch(ex){ console.error('[mckoutie] SSE channel parse error:', ex); }
-  });
-
-  es.addEventListener('section', function(e){
-    sseGotData = true;
-    try {
-      var d = JSON.parse(e.data);
-      var section = d.section;
-      var payload = d.payload || {};
-      if(section === 'channels_meta'){
-        channelsPhaseComplete = true;
-        channelsMeta = payload;
-        updateChannelsMeta(payload);
-        setStatus('Channels complete. Searching for potential customers...');
-      }
-      if(section === 'leads_complete'){
-        setPip('leads','done');
-        setStatus('Found leads. Mapping investor landscape...');
-      }
-      if(section === 'investors_complete'){
-        setPip('investors','done');
-        setStatus('Found investors. Generating strategy...');
-      }
-      if(section === 'strategy'){
-        strategyData = payload;
-        setPip('strategy','done');
-        updateStrategy(payload);
-        setStatus('Strategy ready.');
-      }
-      console.log('[mckoutie] SSE section:', section);
-    } catch(ex){ console.error('[mckoutie] SSE section error:', ex); }
-  });
-
-  es.addEventListener('persona', function(e){
-    sseGotData = true;
-    try {
-      var d = JSON.parse(e.data);
-      var p = d.persona;
-      if(!p) return;
-      personas.push(p);
-      addPersonaCard(p, personas.length - 1);
-      setPip('leads','active');
-      console.log('[mckoutie] SSE persona rendered:', p.name);
-    } catch(ex){ console.error('[mckoutie] SSE persona error:', ex); }
-  });
-
-  es.addEventListener('lead', function(e){
-    sseGotData = true;
-    try {
-      var d = JSON.parse(e.data);
-      var l = d.lead;
-      if(!l) return;
-      leads.push(l);
-      addLeadRow(l, leads.length - 1);
-      setPip('leads','active');
-      console.log('[mckoutie] SSE lead rendered:', l.name);
-    } catch(ex){ console.error('[mckoutie] SSE lead error:', ex); }
-  });
-
-  es.addEventListener('channel_update', function(e){
-    var d = JSON.parse(e.data);
-    var idx = d.index;
-    var deepDive = d.deep_dive;
-    if(idx == null || !deepDive) return;
-    // Update the accordion content for this channel
-    var expandRow = document.getElementById('ch-'+idx);
-    if(!expandRow) return;
-    var actions = deepDive.actions||[];
-    var html = '';
-    if(actions.length){
-      html += '<div class="action-grid">';
-      actions.forEach(function(a){
-        html += '<div class="action-card"><div class="action-title">'+escHtml(a.title||'')+'</div>'+
-          '<div class="action-desc">'+escHtml(a.description||'')+'</div>'+
-          '<div class="action-result">'+escHtml(a.expected_result||'')+'</div></div>';
-      });
-      html += '</div>';
-    }
-    var research = deepDive.research||[];
-    if(research.length){
-      html += '<div style="margin-top:12px;font-size:11px;color:var(--text2)">'+research.length+' research items available</div>';
-    }
-    expandRow.querySelector('td').innerHTML = html;
-    // Flash the row to indicate update
-    var chRow = document.querySelector('tr.ch-row[data-target="ch-'+idx+'"]');
-    if(chRow){
-      chRow.style.borderLeft = '3px solid var(--cyan)';
-      setTimeout(function(){ chRow.style.borderLeft = ''; }, 2000);
-    }
-    // Update the channel object in memory
-    if(channels[idx]) channels[idx].deep_dive = deepDive;
-  });
-
-  es.addEventListener('competitor', function(e){
-    sseGotData = true;
-    try {
-      var d = JSON.parse(e.data);
-      var c = d.competitor;
-      if(!c) return;
-      competitors.push(c);
-      addCompetitorCard(c, competitors.length - 1);
-      setPip('investors','active');
-      console.log('[mckoutie] SSE competitor rendered:', c.name);
-    } catch(ex){ console.error('[mckoutie] SSE competitor error:', ex); }
-  });
-
-  es.addEventListener('investor', function(e){
-    sseGotData = true;
-    try {
-      var d = JSON.parse(e.data);
-      var inv = d.investor;
-      if(!inv) return;
-      investors.push(inv);
-      addInvestorRow(inv, investors.length - 1);
-      setPip('investors','active');
-      console.log('[mckoutie] SSE investor rendered:', inv.name);
-    } catch(ex){ console.error('[mckoutie] SSE investor error:', ex); }
-  });
-
-  es.addEventListener('advisor_ready', function(e){
-    var d = {};
-    try { d = JSON.parse(e.data); } catch(ex){}
-    setPip('advisor', d.partial ? 'active' : 'done');
-    var msg = d.message || 'Your AI advisor is ready.';
-    setThinking(msg);
-    // Activate chat widget if present
-    var chatWidget = document.getElementById('advisor-chat');
-    if(chatWidget) {
-      chatWidget.style.display = 'block';
-      chatWidget.style.opacity = '0';
-      chatWidget.style.transition = 'opacity 0.5s ease';
-      requestAnimationFrame(function(){ chatWidget.style.opacity = '1'; });
-    }
-  });
-
-  es.addEventListener('done', function(e){
-    es.close();
-    // Mark all leads/investors pips done
-    if(leads.length || personas.length) setPip('leads','done');
-    if(investors.length || competitors.length) setPip('investors','done');
-    finishAnalysis();
-  });
-
-  var sseReconnects = 0;
-  var maxReconnects = 5;
-  es.addEventListener('error', function(e){
-    // SSE native error — could be connection drop or server error event
-    if(e.data){
-      try {
-        var d = JSON.parse(e.data);
-        showError(d.message);
-        es.close();
-        return;
-      } catch(ex){}
-    }
-    // Connection error — let EventSource auto-reconnect a few times before falling back
-    sseReconnects++;
-    console.log('[mckoutie] SSE error #'+sseReconnects+' — EventSource readyState:', es.readyState);
-    if(sseReconnects >= maxReconnects){
-      es.close();
-      setStatus('Streaming interrupted. Watching for results...');
-      startPolling();
-    } else {
-      setStatus('Reconnecting to analysis engine... ('+sseReconnects+'/'+maxReconnects+')');
-      // Don't close — let EventSource auto-reconnect
-    }
-  });
-
-  es.addEventListener('already_complete', function(e){
-    es.close();
-    // Report was already done — reload to show full data
-    setStatus('Report is ready. Loading...');
-    setTimeout(function(){ window.location.reload(); }, 500);
-  });
-
-  es.addEventListener('already_running', function(e){
-    // Another tab/session started it — switch to polling for that
-    es.close();
-    setStatus('Analysis in progress — watching for results...');
-    startPolling();
-  });
-
-  // PRIMARY: Polling is the reliable path. SSE is enhancement only.
-  // Start polling immediately — it works through Vercel proxy (same origin, no CORS).
-  // SSE is cross-origin to Railway and often gets killed by proxies/browsers.
   var pollChannelCount = 0;
   var pollLeadCount = 0;
   var pollInvestorCount = 0;
@@ -2136,7 +1911,6 @@ def _streaming_js():
     var pChannels = d.channels||[];
     while(pollChannelCount < pChannels.length){
       var ch = pChannels[pollChannelCount];
-      // Only add if SSE didn't already add this channel
       if(pollChannelCount >= channels.length){
         channels.push(ch);
         addChannelRow(ch, pollChannelCount);
@@ -2202,9 +1976,6 @@ def _streaming_js():
     if(sections.leads_complete) setPip('leads','done');
     if(sections.investors_complete) setPip('investors','done');
   }
-
-  // Start polling immediately — don't wait for SSE
-  startPolling();
 
 })();
 """
