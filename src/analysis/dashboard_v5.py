@@ -1831,16 +1831,16 @@ def _streaming_js():
   var channelsPhaseComplete = false;
   var sseGotData = false;
 
-  // Safety net: if SSE delivers nothing in 90s, fall back to polling.
-  // Background analysis was already started by the page load, so polling will find data.
+  // Safety net: if SSE delivers nothing in 480s, fall back to polling.
+  // VPS analysis can take 2-5 min depending on model load.
   var sseTimeout = setTimeout(function(){
     if(!sseGotData){
-      console.log('[mckoutie] SSE timeout — no data in 90s, switching to polling');
+      console.log('[mckoutie] SSE timeout — no data in 480s, switching to polling');
       es.close();
-      setStatus('Connecting via polling...');
-      fallbackPoll();
+      setStatus('Analysis is taking longer than expected. Checking for results...');
+      startPolling();
     }
-  }, 90000);
+  }, 480000);
 
   es.addEventListener('thinking', function(e){
     sseGotData = true;
@@ -1860,60 +1860,72 @@ def _streaming_js():
     try {
       var d = JSON.parse(e.data);
       var ch = d.channel;
-      if(!ch){ console.warn('[mckoutie] channel event missing channel data:', e.data); return; }
+      if(!ch) return;
+      // RENDER the channel directly into the dashboard
       channels.push(ch);
+      addChannelRow(ch, channelCount);
       channelCount++;
-      console.log('[mckoutie] Channel received #'+channelCount+':', ch.channel, ch.score);
-      addChannelRow(ch, d.index != null ? d.index : channels.length-1);
+      setPip('channels','active');
+      if(channelCount >= 19) setPip('channels','done');
       setStatus('Analyzing channels... ('+channelCount+'/19)');
-    } catch(ex){ console.error('[mckoutie] Error processing channel event:', ex, e.data); }
+      console.log('[mckoutie] SSE channel #'+channelCount+':', ch.channel, ch.score);
+    } catch(ex){ console.error('[mckoutie] SSE channel parse error:', ex); }
   });
 
   es.addEventListener('section', function(e){
-    var d = JSON.parse(e.data);
-    var section = d.section;
-    var payload = d.payload||{};
-
-    if(section === 'channels_meta'){
-      channelsPhaseComplete = true;
-      setPip('channels','done');
-      setPip('leads','active');
-      updateChannelsMeta(payload);
-      setStatus('Channels complete. Searching for potential customers...');
-    }
-    if(section === 'leads_complete'){
-      setPip('leads','done');
-      setPip('investors','active');
-      setStatus('Found '+((payload||{}).count||0)+' potential leads. Mapping investor landscape...');
-    }
-    if(section === 'investors_complete'){
-      setPip('investors','done');
-      setPip('strategy','active');
-      setStatus('Found '+((payload||{}).count||0)+' investors. Generating strategy...');
-    }
-    if(section === 'strategy'){
-      setPip('strategy','done');
-      updateStrategy(payload);
-    }
+    sseGotData = true;
+    try {
+      var d = JSON.parse(e.data);
+      var section = d.section;
+      var payload = d.payload || {};
+      if(section === 'channels_meta'){
+        channelsPhaseComplete = true;
+        channelsMeta = payload;
+        updateChannelsMeta(payload);
+        setStatus('Channels complete. Searching for potential customers...');
+      }
+      if(section === 'leads_complete'){
+        setPip('leads','done');
+        setStatus('Found leads. Mapping investor landscape...');
+      }
+      if(section === 'investors_complete'){
+        setPip('investors','done');
+        setStatus('Found investors. Generating strategy...');
+      }
+      if(section === 'strategy'){
+        strategyData = payload;
+        setPip('strategy','done');
+        updateStrategy(payload);
+        setStatus('Strategy ready.');
+      }
+      console.log('[mckoutie] SSE section:', section);
+    } catch(ex){ console.error('[mckoutie] SSE section error:', ex); }
   });
 
   es.addEventListener('persona', function(e){
-    var d = JSON.parse(e.data);
-    var p = d.persona;
-    if(!p) return;
-    personas.push(p);
-    addPersonaCard(p, d.index != null ? d.index : personas.length-1);
+    sseGotData = true;
+    try {
+      var d = JSON.parse(e.data);
+      var p = d.persona;
+      if(!p) return;
+      personas.push(p);
+      addPersonaCard(p, personas.length - 1);
+      setPip('leads','active');
+      console.log('[mckoutie] SSE persona rendered:', p.name);
+    } catch(ex){ console.error('[mckoutie] SSE persona error:', ex); }
   });
 
   es.addEventListener('lead', function(e){
+    sseGotData = true;
     try {
       var d = JSON.parse(e.data);
       var l = d.lead;
-      if(!l){ console.warn('[mckoutie] lead event missing lead data:', e.data); return; }
+      if(!l) return;
       leads.push(l);
-      console.log('[mckoutie] Lead received #'+leads.length+':', l.name, l.score);
-      addLeadRow(l, d.index != null ? d.index : leads.length-1);
-    } catch(ex){ console.error('[mckoutie] Error processing lead event:', ex, e.data); }
+      addLeadRow(l, leads.length - 1);
+      setPip('leads','active');
+      console.log('[mckoutie] SSE lead rendered:', l.name);
+    } catch(ex){ console.error('[mckoutie] SSE lead error:', ex); }
   });
 
   es.addEventListener('channel_update', function(e){
@@ -1951,23 +1963,29 @@ def _streaming_js():
   });
 
   es.addEventListener('competitor', function(e){
-    var d = JSON.parse(e.data);
-    var c = d.competitor;
-    if(!c) return;
-    competitors.push(c);
-    addCompetitorCard(c, d.index != null ? d.index : competitors.length-1);
-    setPip('investors','active');
+    sseGotData = true;
+    try {
+      var d = JSON.parse(e.data);
+      var c = d.competitor;
+      if(!c) return;
+      competitors.push(c);
+      addCompetitorCard(c, competitors.length - 1);
+      setPip('investors','active');
+      console.log('[mckoutie] SSE competitor rendered:', c.name);
+    } catch(ex){ console.error('[mckoutie] SSE competitor error:', ex); }
   });
 
   es.addEventListener('investor', function(e){
+    sseGotData = true;
     try {
       var d = JSON.parse(e.data);
       var inv = d.investor;
-      if(!inv){ console.warn('[mckoutie] investor event missing data:', e.data); return; }
+      if(!inv) return;
       investors.push(inv);
-      console.log('[mckoutie] Investor received #'+investors.length+':', inv.name, inv.type);
-      addInvestorRow(inv, d.index != null ? d.index : investors.length-1);
-    } catch(ex){ console.error('[mckoutie] Error processing investor event:', ex, e.data); }
+      addInvestorRow(inv, investors.length - 1);
+      setPip('investors','active');
+      console.log('[mckoutie] SSE investor rendered:', inv.name);
+    } catch(ex){ console.error('[mckoutie] SSE investor error:', ex); }
   });
 
   es.addEventListener('advisor_ready', function(e){
@@ -1994,6 +2012,8 @@ def _streaming_js():
     finishAnalysis();
   });
 
+  var sseReconnects = 0;
+  var maxReconnects = 5;
   es.addEventListener('error', function(e){
     // SSE native error — could be connection drop or server error event
     if(e.data){
@@ -2004,10 +2024,17 @@ def _streaming_js():
         return;
       } catch(ex){}
     }
-    // Connection error — fall back to polling
-    es.close();
-    setStatus('Connection lost. Switching to polling...');
-    fallbackPoll();
+    // Connection error — let EventSource auto-reconnect a few times before falling back
+    sseReconnects++;
+    console.log('[mckoutie] SSE error #'+sseReconnects+' — EventSource readyState:', es.readyState);
+    if(sseReconnects >= maxReconnects){
+      es.close();
+      setStatus('Streaming interrupted. Watching for results...');
+      startPolling();
+    } else {
+      setStatus('Reconnecting to analysis engine... ('+sseReconnects+'/'+maxReconnects+')');
+      // Don't close — let EventSource auto-reconnect
+    }
   });
 
   es.addEventListener('already_complete', function(e){
@@ -2021,74 +2048,129 @@ def _streaming_js():
     // Another tab/session started it — switch to polling for that
     es.close();
     setStatus('Analysis in progress — watching for results...');
-    fallbackPoll();
+    startPolling();
   });
 
-  // Fallback polling if SSE connection drops — progressively populates dashboard
+  // PRIMARY: Polling is the reliable path. SSE is enhancement only.
+  // Start polling immediately — it works through Vercel proxy (same origin, no CORS).
+  // SSE is cross-origin to Railway and often gets killed by proxies/browsers.
   var pollChannelCount = 0;
   var pollLeadCount = 0;
   var pollInvestorCount = 0;
   var pollCompetitorCount = 0;
   var pollPersonaCount = 0;
+  var pollingActive = false;
+  var pollInterval = 2000;  // Start fast, slow down once data flows
 
-  function fallbackPoll(){
-    fetch(sseBase+'/report/'+rid+'/progress')
+  function startPolling(){
+    if(pollingActive) return;
+    pollingActive = true;
+    console.log('[mckoutie] Polling started (primary data path)');
+    doPoll();
+  }
+
+  function doPoll(){
+    fetch('/report/'+rid+'/progress')
       .then(function(r){ return r.json(); })
       .then(function(d){
         if(d.status==='complete'){
-          window.location.reload();
+          // One final render pass before reload to show all data
+          renderPollData(d);
+          setStatus('Analysis complete. Loading full report...');
+          pips.forEach(function(p){ p.style.background='#00ff88'; p.style.animation='none'; });
+          setTimeout(function(){ window.location.reload(); }, 1500);
           return;
         }
         if(d.status==='error'){
           showError(d.error||'unknown');
           return;
         }
-        // Update status message
         if(d.status) setStatus(d.status);
-
-        // Progressively add channels
-        var pChannels = d.channels||[];
-        while(pollChannelCount < pChannels.length){
-          addChannelRow(pChannels[pollChannelCount], pollChannelCount);
-          pollChannelCount++;
-          setPip('channels','active');
-        }
-        if(pollChannelCount >= 19) setPip('channels','done');
-
-        // Progressively add personas
-        var pPersonas = d.personas||[];
-        while(pollPersonaCount < pPersonas.length){
-          addPersonaCard(pPersonas[pollPersonaCount], pollPersonaCount);
-          pollPersonaCount++;
-        }
-
-        // Progressively add leads
-        var pLeads = d.leads||[];
-        while(pollLeadCount < pLeads.length){
-          addLeadRow(pLeads[pollLeadCount], pollLeadCount);
-          pollLeadCount++;
-          setPip('leads','active');
-        }
-
-        // Progressively add competitors
-        var pComps = d.competitors||[];
-        while(pollCompetitorCount < pComps.length){
-          addCompetitorCard(pComps[pollCompetitorCount], pollCompetitorCount);
-          pollCompetitorCount++;
-          setPip('investors','active');
-        }
-
-        // Progressively add investors
-        var pInvs = d.investors||[];
-        while(pollInvestorCount < pInvs.length){
-          addInvestorRow(pInvs[pollInvestorCount], pollInvestorCount);
-          pollInvestorCount++;
-        }
-
-        setTimeout(fallbackPoll, 3000);
+        renderPollData(d);
+        // Slow down polling once we have some data
+        var interval = (pollChannelCount > 0) ? 3000 : 2000;
+        setTimeout(doPoll, interval);
       })
-      .catch(function(){ setTimeout(fallbackPoll, 5000); });
+      .catch(function(err){
+        console.log('[mckoutie] Poll error:', err);
+        setTimeout(doPoll, 5000);
+      });
   }
+
+  function renderPollData(d){
+    // Progressively add channels
+    var pChannels = d.channels||[];
+    while(pollChannelCount < pChannels.length){
+      var ch = pChannels[pollChannelCount];
+      // Only add if SSE didn't already add this channel
+      if(pollChannelCount >= channels.length){
+        channels.push(ch);
+        addChannelRow(ch, pollChannelCount);
+      }
+      pollChannelCount++;
+      setPip('channels','active');
+    }
+    if(pollChannelCount >= 19) setPip('channels','done');
+
+    // Progressively add personas
+    var pPersonas = d.personas||[];
+    while(pollPersonaCount < pPersonas.length){
+      if(pollPersonaCount >= personas.length){
+        personas.push(pPersonas[pollPersonaCount]);
+        addPersonaCard(pPersonas[pollPersonaCount], pollPersonaCount);
+      }
+      pollPersonaCount++;
+    }
+
+    // Progressively add leads
+    var pLeads = d.leads||[];
+    while(pollLeadCount < pLeads.length){
+      if(pollLeadCount >= leads.length){
+        leads.push(pLeads[pollLeadCount]);
+        addLeadRow(pLeads[pollLeadCount], pollLeadCount);
+      }
+      pollLeadCount++;
+      setPip('leads','active');
+    }
+
+    // Progressively add competitors
+    var pComps = d.competitors||[];
+    while(pollCompetitorCount < pComps.length){
+      if(pollCompetitorCount >= competitors.length){
+        competitors.push(pComps[pollCompetitorCount]);
+        addCompetitorCard(pComps[pollCompetitorCount], pollCompetitorCount);
+      }
+      pollCompetitorCount++;
+      setPip('investors','active');
+    }
+
+    // Progressively add investors
+    var pInvs = d.investors||[];
+    while(pollInvestorCount < pInvs.length){
+      if(pollInvestorCount >= investors.length){
+        investors.push(pInvs[pollInvestorCount]);
+        addInvestorRow(pInvs[pollInvestorCount], pollInvestorCount);
+      }
+      pollInvestorCount++;
+    }
+
+    // Handle section completions
+    var sections = d.sections||{};
+    if(sections.channels_meta && !channelsMeta){
+      channelsMeta = sections.channels_meta;
+      updateChannelsMeta(sections.channels_meta);
+    }
+    if(sections.strategy && !strategyData){
+      strategyData = sections.strategy;
+      setPip('strategy','done');
+      updateStrategy(sections.strategy);
+    }
+    if(sections.leads_complete) setPip('leads','done');
+    if(sections.investors_complete) setPip('investors','done');
+  }
+
+  // Start polling immediately — don't wait for SSE
+  startPolling();
 
 })();
 """

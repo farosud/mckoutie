@@ -580,14 +580,19 @@ async def _call_vps_proxy(prompt: str) -> str:
 
 
 async def _call_llm(prompt: str) -> str:
-    """Call LLM — tries VPS proxy (free Opus) first, then OpenRouter Gemini, then Claude.
-
-    OpenRouter Sonnet first (fast). VPS proxy routes to Opus which is too slow.
-    """
+    """Call LLM — tries VPS proxy (free) first, then OpenRouter as fallback."""
     last_error = None
 
-    # OpenRouter first (fast Sonnet, VPS routes to slow Opus)
-    # Fallback to VPS proxy if OpenRouter fails
+    # PRIMARY: VPS proxy (free, no credit limits)
+    if settings.vps_proxy_url and settings.vps_proxy_key:
+        try:
+            logger.info("[LEADS] LLM call via VPS proxy (Sonnet)")
+            return await _call_vps_proxy(prompt)
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"[LEADS] VPS proxy failed: {e}")
+
+    # FALLBACK: OpenRouter
     if settings.openrouter_api_key:
         models_to_try = [_PERSONA_MODEL_FALLBACK, settings.persona_model_fallback]
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
@@ -634,6 +639,10 @@ async def _call_llm(prompt: str) -> str:
                             logger.warning(f"[LEADS] OpenRouter 429, backing off {wait:.1f}s")
                             await asyncio.sleep(wait)
                             last_error = "rate limited"
+                        elif resp.status_code == 402:
+                            logger.warning(f"[LEADS] OpenRouter out of credits, skipping")
+                            last_error = "out of credits"
+                            break  # Don't retry on 402
                         else:
                             body = resp.text[:500]
                             logger.error(f"[LEADS] OpenRouter {resp.status_code} after {elapsed:.1f}s: {body}")
@@ -649,18 +658,8 @@ async def _call_llm(prompt: str) -> str:
                         last_error = str(e)
                         logger.warning(f"[LEADS] OpenRouter error after {elapsed:.1f}s: {e}")
                         await asyncio.sleep(2 + random.uniform(0, 2))
-
-                if model == settings.persona_model_fallback:
-                    logger.info(f"[LEADS] Fast model failed, trying fallback ({_PERSONA_MODEL_FALLBACK})")
-
-    # Try VPS proxy (free, uses Sonnet)
-    if settings.vps_proxy_url and settings.vps_proxy_key:
-        try:
-            logger.info("[LEADS] Falling back to VPS proxy")
-            return await _call_vps_proxy(prompt)
-        except Exception as e:
-            last_error = str(e)
-            logger.warning(f"[LEADS] VPS proxy also failed: {e}")
+                if last_error == "out of credits":
+                    break
 
     # Last resort: Anthropic direct
     if settings.anthropic_api_key:
