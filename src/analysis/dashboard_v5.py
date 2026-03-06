@@ -2074,11 +2074,20 @@ def _streaming_js():
       .then(function(r){ return r.json(); })
       .then(function(d){
         if(d.status==='complete'){
-          // One final render pass before reload to show all data
+          // Render ALL the data into the dashboard before considering reload
           renderPollData(d);
-          setStatus('Analysis complete. Loading full report...');
+          setStatus('Analysis complete!');
           pips.forEach(function(p){ p.style.background='#00ff88'; p.style.animation='none'; });
-          setTimeout(function(){ window.location.reload(); }, 1500);
+          // Only reload if we actually rendered data — if dashboard is empty,
+          // give the full render a chance to populate the DOM first
+          var hasData = channels.length > 0 || leads.length > 0;
+          if(hasData){
+            // Data rendered — fade out banner, no disruptive reload
+            if(banner){ banner.style.transition='opacity 0.5s'; banner.style.opacity='0'; setTimeout(function(){banner.style.display='none';},600); }
+          } else {
+            // No data rendered despite complete — reload to get the static full page
+            setTimeout(function(){ window.location.reload(); }, 2000);
+          }
           return;
         }
         if(d.status==='error'){

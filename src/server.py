@@ -1291,11 +1291,15 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     # but if someone got past it (or came back with a cookie), always stream.
     should_stream = is_skeleton
 
-    # Do NOT start analysis here — let the SSE endpoint (/report/{id}/stream) start it.
-    # Starting it here causes a race condition: analysis completes before the SSE
-    # connection opens, so the client never sees streaming data.
-    if is_skeleton:
-        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — SSE will start analysis on connect")
+    # Start deep analysis as a background task IMMEDIATELY on page load.
+    # Both SSE and polling will read from the same _deep_progress dict.
+    # Start for ANY visitor (logged in or not) — the login overlay is cosmetic,
+    # analysis should begin so data is ready when they authenticate.
+    if is_skeleton and not is_deep_analysis_running(report_id):
+        logger.info(f"[REPORT VIEW] Starting deep analysis for skeleton {report_id} on page load (logged_in={logged_in})")
+        asyncio.create_task(run_deep_analysis_background(report_id))
+    elif is_skeleton:
+        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — streaming={should_stream} logged_in={logged_in} deep_running={is_deep_analysis_running(report_id)}")
 
     # Render the dashboard — with streaming flag for skeleton reports
     # SSE connects DIRECTLY to Railway (bypasses Vercel proxy which kills long-lived connections)
@@ -1393,6 +1397,7 @@ async def stream_deep_analysis(request: Request, report_id: str):
         emitted_investors = 0
         last_status = ""
         emitted_sections = set()
+        heartbeat_count = 0
 
         yield {"event": "thinking", "data": json.dumps({"message": "Deep analysis starting...", "detail": ""})}
 
@@ -1403,10 +1408,21 @@ async def stream_deep_analysis(request: Request, report_id: str):
 
             progress = get_deep_progress(report_id)
             if not progress:
+                heartbeat_count += 1
+                # Send keepalive comment every 5 seconds to prevent proxy/browser timeout
+                if heartbeat_count % 5 == 0:
+                    yield {"comment": "keepalive"}
                 await asyncio.sleep(1)
                 continue
 
             status = progress.get("status", "")
+
+            # Send periodic heartbeat thinking events to keep connection alive
+            heartbeat_count += 1
+            if heartbeat_count % 10 == 0 and not status.startswith("complete") and not status.startswith("error"):
+                elapsed_min = heartbeat_count // 60
+                elapsed_sec = heartbeat_count % 60
+                yield {"event": "thinking", "data": json.dumps({"message": f"Analyzing... ({elapsed_min}m {elapsed_sec}s elapsed)", "detail": "Deep research in progress — this takes 2-4 minutes for thorough analysis"})}
 
             # Stream status/thinking updates
             if status and status != last_status:
@@ -1497,18 +1513,31 @@ async def poll_deep_progress(request: Request, report_id: str):
         try:
             analysis = json.loads(analysis_path.read_text())
             if analysis.get("_phase") == "complete":
+                # Build flat arrays matching what the client JS expects
+                # (channels, leads, investors, competitors, personas at top level)
+                leads_research = analysis.get("leads_research", {})
+                investor_research = analysis.get("investor_research", {})
+                channel_list = sorted(
+                    analysis.get("channel_analysis", []),
+                    key=lambda c: c.get("score", 0),
+                    reverse=True,
+                )
                 return JSONResponse({
                     "status": "complete",
+                    "channels": channel_list,
+                    "personas": leads_research.get("personas", []),
+                    "leads": leads_research.get("leads", []),
+                    "competitors": investor_research.get("competitors", []),
+                    "investors": investor_research.get("competitor_investors", []) + investor_research.get("market_investors", []),
                     "sections": {
-                        "channels": {
-                            "channel_analysis": analysis.get("channel_analysis", []),
+                        "channels_meta": {
                             "bullseye_ranking": analysis.get("bullseye_ranking", {}),
                             "executive_summary": analysis.get("executive_summary", ""),
                             "hot_take": analysis.get("hot_take", ""),
                             "company_profile": analysis.get("company_profile", {}),
                         },
-                        "leads": analysis.get("leads_research", {}),
-                        "investors": analysis.get("investor_research", {}),
+                        "leads_complete": {"count": len(leads_research.get("leads", []))},
+                        "investors_complete": {"count": len(investor_research.get("competitor_investors", []) + investor_research.get("market_investors", []))},
                         "strategy": {
                             "ninety_day_plan": analysis.get("ninety_day_plan", {}),
                             "budget_allocation": analysis.get("budget_allocation", {}),
@@ -1525,9 +1554,28 @@ async def poll_deep_progress(request: Request, report_id: str):
     if progress:
         return JSONResponse(progress)
 
-    # Not started yet
+    # Not started yet — start it as a safety net (in case page load and SSE both missed it)
     if is_deep_analysis_running(report_id):
         return JSONResponse({"status": "running", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
+
+    # If analysis hasn't started and report is still a skeleton, start it now
+    # BUT only if startup_data has been enriched (scrape finished)
+    if not is_deep_analysis_running(report_id):
+        analysis_path = REPORTS_DIR / report_id / "analysis.json"
+        if analysis_path.exists():
+            try:
+                analysis_check = json.loads(analysis_path.read_text())
+                if analysis_check.get("_phase") != "complete":
+                    sd = analysis_check.get("_startup_data", "")
+                    if sd and sd.strip().count("\n") >= 3 and len(sd) > 200:
+                        logger.info(f"[PROGRESS] Starting deep analysis for {report_id} via polling safety net")
+                        asyncio.create_task(run_deep_analysis_background(report_id))
+                        return JSONResponse({"status": "starting", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
+                    else:
+                        logger.info(f"[PROGRESS] Startup data not ready yet for {report_id} ({len(sd)} chars), waiting for scrape")
+                        return JSONResponse({"status": "Scraping website content...", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
+            except Exception:
+                pass
 
     return JSONResponse({"status": "not_started", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
 
