@@ -903,12 +903,23 @@ async def run_core_analysis(startup_data: str) -> dict:
         try:
             text = await _call_vps_proxy(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="claude-sonnet-4", max_tokens=8000, timeout_seconds=180.0,
+                model="claude-sonnet-4", max_tokens=8000, timeout_seconds=420.0,
             )
         except RuntimeError as e:
             logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
 
-    # FALLBACK 1: OpenRouter Haiku (cheap, fast)
+    # FALLBACK 1: OpenRouter Gemini Flash (free/cheap, fast, reliable)
+    if text is None and settings.openrouter_api_key:
+        logger.info("[PHASE A] Falling back to OpenRouter (Gemini Flash)...")
+        try:
+            text = await _call_openrouter(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="google/gemini-2.5-flash", max_tokens=8000, timeout_seconds=120.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter Gemini Flash failed for Phase A: {e}")
+
+    # FALLBACK 2: OpenRouter Haiku
     if text is None and settings.openrouter_api_key:
         logger.info("[PHASE A] Falling back to OpenRouter (Haiku)...")
         try:
@@ -919,7 +930,7 @@ async def run_core_analysis(startup_data: str) -> dict:
         except RuntimeError as e:
             logger.warning(f"OpenRouter Haiku failed for Phase A: {e}")
 
-    # FALLBACK 2: OpenRouter Sonnet (slower but reliable)
+    # FALLBACK 3: OpenRouter Sonnet
     if text is None and settings.openrouter_api_key:
         logger.info("[PHASE A] Falling back to OpenRouter (Sonnet)...")
         try:
@@ -929,17 +940,6 @@ async def run_core_analysis(startup_data: str) -> dict:
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Sonnet failed for Phase A: {e}")
-
-    # FALLBACK 3: OpenRouter Gemini Flash (cheap, fast, always has credits)
-    if text is None and settings.openrouter_api_key:
-        logger.info("[PHASE A] Falling back to OpenRouter (Gemini Flash)...")
-        try:
-            text = await _call_openrouter(
-                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="google/gemini-2.5-flash", max_tokens=8000, timeout_seconds=120.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"OpenRouter Gemini Flash failed for Phase A: {e}")
 
     # LAST RESORT: Anthropic direct
     if text is None and settings.anthropic_api_key:

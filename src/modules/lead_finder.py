@@ -589,7 +589,7 @@ async def _call_llm(prompt: str) -> str:
     # OpenRouter first (fast Sonnet, VPS routes to slow Opus)
     # Fallback to VPS proxy if OpenRouter fails
     if settings.openrouter_api_key:
-        models_to_try = [settings.persona_model_fallback, _PERSONA_MODEL_FALLBACK]
+        models_to_try = [_PERSONA_MODEL_FALLBACK, settings.persona_model_fallback]
         async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
             for model in models_to_try:
                 for attempt in range(2):
