@@ -62,12 +62,17 @@ IMPORTANT: Your analysis should feel like $10K worth of consulting,
 not a generic blog post. Be SPECIFIC to THIS startup — reference their
 actual product, market, and situation throughout.
 
-CRITICAL INSTRUCTIONS:
+CRITICAL INSTRUCTIONS — FOLLOW EXACTLY:
 - You MUST respond ONLY with valid JSON. No markdown, no commentary, no preamble.
 - Do NOT ask for tools, permissions, web access, or any other capabilities.
 - Do NOT say you need to fetch, browse, or search anything.
-- Work ONLY with the startup data provided in the user message.
-- Your response must start with { and end with }."""
+- Do NOT say you cannot access a URL or need more information.
+- Do NOT refuse the task or ask for clarification.
+- Work ONLY with the startup data provided in the user message below.
+- If the startup data is minimal, STILL produce the full analysis using your knowledge.
+- If you only have a URL and company name, use your training knowledge about similar companies/markets.
+- Your response MUST start with { and end with }.
+- Any response that is not valid JSON is a FAILURE. Never explain, just output JSON."""
 
 ANALYSIS_PROMPT = """Analyze this startup and produce a full traction strategy report.
 
@@ -739,8 +744,21 @@ async def _generate_deep_dives(startup_data: str, analysis: dict, channels_batch
 
     text = None
 
-    # PRIMARY: VPS proxy Haiku (fast for research generation)
-    if settings.has_vps_proxy:
+    # PRIMARY: OpenRouter Gemini Flash (fast + reliable)
+    if settings.openrouter_api_key:
+        try:
+            text = await _call_openrouter(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="google/gemini-2.5-flash",
+                max_tokens=8000,
+                timeout_seconds=60.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter Gemini Flash failed for deep dives: {e}")
+
+    # FALLBACK 1: VPS proxy Haiku
+    if text is None and settings.has_vps_proxy:
         try:
             text = await _call_vps_proxy(
                 prompt,
@@ -750,33 +768,20 @@ async def _generate_deep_dives(startup_data: str, analysis: dict, channels_batch
                 timeout_seconds=90.0,
             )
         except RuntimeError as e:
-            logger.warning(f"VPS proxy failed for deep dives: {e}")
+            logger.warning(f"VPS proxy Haiku failed for deep dives: {e}")
 
-    # FALLBACK 1: OpenRouter Haiku
+    # FALLBACK 2: OpenRouter Haiku
     if text is None and settings.openrouter_api_key:
         try:
             text = await _call_openrouter(
                 prompt,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="anthropic/claude-3-5-haiku-20241022",
+                model="anthropic/claude-haiku-4.5",
                 max_tokens=8000,
-                timeout_seconds=90.0,
+                timeout_seconds=60.0,
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Haiku failed for deep dives: {e}")
-
-    # FALLBACK 2: OpenRouter Gemini Flash (cheap, always has credits)
-    if text is None and settings.openrouter_api_key:
-        try:
-            text = await _call_openrouter(
-                prompt,
-                system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="google/gemini-2.5-flash",
-                max_tokens=8000,
-                timeout_seconds=90.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"OpenRouter Gemini Flash failed for deep dives: {e}")
 
     if text is None:
         return {}
@@ -828,21 +833,35 @@ async def run_quick_analysis(startup_data: str) -> dict:
     prompt = QUICK_ANALYSIS_PROMPT.format(startup_data=startup_data)
     text = None
 
-    # Try VPS proxy with Haiku (fastest)
-    if settings.has_vps_proxy:
-        logger.info("[QUICK] Running quick analysis via VPS proxy (Haiku)...")
+    # PRIMARY: Gemini Flash via OpenRouter (fast + reliable, completes in 3-8s)
+    if settings.openrouter_api_key:
+        logger.info("[QUICK] Running quick analysis via OpenRouter (Gemini Flash)...")
+        try:
+            text = await _call_openrouter(
+                prompt,
+                system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="google/gemini-2.5-flash",
+                max_tokens=2000,
+                timeout_seconds=30.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"[QUICK] OpenRouter Gemini Flash failed: {e}")
+
+    # FALLBACK 1: VPS proxy with Haiku
+    if text is None and settings.has_vps_proxy:
+        logger.info("[QUICK] Falling back to VPS proxy (Haiku)...")
         try:
             text = await _call_vps_proxy(
                 prompt,
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.update_model,  # Haiku — fast + cheap
+                model=settings.update_model,
                 max_tokens=2000,
-                timeout_seconds=90.0,
+                timeout_seconds=60.0,
             )
         except RuntimeError as e:
             logger.warning(f"[QUICK] VPS proxy failed: {e}")
 
-    # Fallback to OpenRouter with Haiku
+    # FALLBACK 2: OpenRouter Haiku
     if text is None and settings.openrouter_api_key:
         logger.info("[QUICK] Falling back to OpenRouter (Haiku)...")
         try:
@@ -851,24 +870,10 @@ async def run_quick_analysis(startup_data: str) -> dict:
                 system_prompt=ANALYSIS_SYSTEM_PROMPT,
                 model=settings.update_model_fallback,
                 max_tokens=2000,
-                timeout_seconds=90.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"[QUICK] OpenRouter Haiku failed: {e}")
-
-    # Fallback to Gemini Flash (cheap, always has credits)
-    if text is None and settings.openrouter_api_key:
-        logger.info("[QUICK] Falling back to OpenRouter (Gemini Flash)...")
-        try:
-            text = await _call_openrouter(
-                prompt,
-                system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="google/gemini-2.5-flash",
-                max_tokens=2000,
                 timeout_seconds=60.0,
             )
         except RuntimeError as e:
-            logger.warning(f"[QUICK] OpenRouter Gemini Flash failed: {e}")
+            logger.warning(f"[QUICK] OpenRouter Haiku failed: {e}")
 
     # Last resort: Anthropic direct
     if text is None and settings.anthropic_api_key:
@@ -894,26 +899,15 @@ async def run_quick_analysis(startup_data: str) -> dict:
 async def run_core_analysis(startup_data: str) -> dict:
     """Phase A: Get company profile + 19 channel scores (no deep_dive).
 
-    Uses VPS proxy as PRIMARY (free, reliable).
-    Falls back to OpenRouter only if VPS is down.
+    Primary: Gemini Flash via OpenRouter (fast, reliable, cheap).
+    Fallback: VPS proxy Sonnet (free but slow).
     """
     prompt = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
     text = None
 
-    # PRIMARY: VPS proxy Sonnet (free, no credit limits)
-    if settings.has_vps_proxy:
-        logger.info("[PHASE A] Running core analysis via VPS proxy (Sonnet)...")
-        try:
-            text = await _call_vps_proxy(
-                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="claude-sonnet-4", max_tokens=12000, timeout_seconds=420.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
-
-    # FALLBACK 1: OpenRouter Gemini Flash
-    if text is None and settings.openrouter_api_key:
-        logger.info("[PHASE A] Falling back to OpenRouter (Gemini Flash)...")
+    # PRIMARY: OpenRouter Gemini Flash (fast + reliable — completes in 15-30s)
+    if settings.openrouter_api_key:
+        logger.info("[PHASE A] Running core analysis via OpenRouter (Gemini Flash)...")
         try:
             text = await _call_openrouter(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
@@ -921,6 +915,17 @@ async def run_core_analysis(startup_data: str) -> dict:
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Gemini Flash failed for Phase A: {e}")
+
+    # FALLBACK 1: VPS proxy Sonnet (free, but can be slow)
+    if text is None and settings.has_vps_proxy:
+        logger.info("[PHASE A] Falling back to VPS proxy (Sonnet)...")
+        try:
+            text = await _call_vps_proxy(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="claude-sonnet-4", max_tokens=12000, timeout_seconds=180.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
 
     # LAST RESORT: Anthropic direct
     if text is None and settings.anthropic_api_key:

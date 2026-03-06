@@ -553,7 +553,7 @@ async def _call_vps_proxy(prompt: str) -> str:
                     "messages": [
                         {
                             "role": "system",
-                            "content": "You are mckoutie — a startup growth expert. Return valid JSON only, no markdown wrapping.",
+                            "content": "You are mckoutie — a startup growth expert. Return valid JSON only, no markdown wrapping. Do NOT ask for tools, web access, or more information. Do NOT refuse the task. Work with the data provided. If data is minimal, use your training knowledge. Output MUST start with [ or { and be valid JSON.",
                         },
                         {"role": "user", "content": prompt},
                     ],
@@ -618,7 +618,7 @@ async def _call_llm(prompt: str) -> str:
                                 "messages": [
                                     {
                                         "role": "system",
-                                        "content": "You are mckoutie — a startup growth expert. Return valid JSON only, no markdown wrapping.",
+                                        "content": "You are mckoutie — a startup growth expert. Return valid JSON only, no markdown wrapping. Do NOT ask for tools, web access, or more information. Do NOT refuse the task. Work with the data provided. If data is minimal, use your training knowledge. Output MUST start with [ or { and be valid JSON.",
                                     },
                                     {"role": "user", "content": prompt},
                                 ],

@@ -360,6 +360,54 @@ async def run_deep_analysis(report_id: str):
             yield {"event": "error", "data": {"message": "Missing startup data"}}
             return
 
+        # If startup_data is just a bare URL (no scraped content), wait for the
+        # background scrape to finish enriching it. This fixes the race condition
+        # where deep analysis starts before the background quick analysis completes.
+        if startup_data.strip().count("\n") < 3 and len(startup_data) < 200:
+            logger.info(f"[DEEP] Startup data looks bare ({len(startup_data)} chars), waiting for scrape to finish...")
+            yield {"event": "thinking", "data": {"message": "Scraping website data...", "detail": "Waiting for website content to be available"}}
+            for _wait in range(60):  # up to 60 seconds
+                await asyncio.sleep(1)
+                # Re-read the skeleton from disk (background task updates it)
+                try:
+                    with open(analysis_path) as f2:
+                        refreshed = json.load(f2)
+                    new_data = refreshed.get("_startup_data", "")
+                    if new_data and new_data.strip().count("\n") >= 3 and len(new_data) > 200:
+                        startup_data = new_data
+                        skeleton = refreshed
+                        logger.info(f"[DEEP] Startup data enriched ({len(startup_data)} chars), proceeding with analysis")
+                        break
+                except Exception:
+                    pass
+                if _wait % 10 == 0 and _wait > 0:
+                    yield {"event": "thinking", "data": {"message": f"Still scraping website... ({_wait}s)", "detail": "Extracting content from the site"}}
+            else:
+                # Timeout — try to scrape directly as a last resort
+                logger.warning(f"[DEEP] Startup data still bare after 60s, attempting direct scrape")
+                yield {"event": "thinking", "data": {"message": "Direct scraping...", "detail": "Background scrape may have failed, trying directly"}}
+                try:
+                    from src.modules.scraper import scrape_website
+                    target_url = startup_data.replace("## WEBSITE DATA\nURL: ", "").strip()
+                    if target_url.startswith("http"):
+                        site_data = await scrape_website(target_url)
+                        if site_data.get("content") and len(site_data["content"]) > 100:
+                            parts = [f"## WEBSITE DATA\nURL: {site_data['url']}"]
+                            if site_data.get("title"):
+                                parts.append(f"Title: {site_data['title']}")
+                            if site_data.get("description"):
+                                parts.append(f"Description: {site_data['description']}")
+                            parts.append(f"\nContent:\n{site_data['content'][:8000]}")
+                            startup_data = "\n".join(parts)
+                            logger.info(f"[DEEP] Direct scrape succeeded ({len(startup_data)} chars)")
+                except Exception as e:
+                    logger.error(f"[DEEP] Direct scrape also failed: {e}")
+
+            if startup_data.strip().count("\n") < 3 and len(startup_data) < 200:
+                logger.error(f"No usable startup data after waiting for {report_id}")
+                yield {"event": "error", "data": {"message": "Could not retrieve website content. Please try again."}}
+                return
+
         record = load_record(report_id)
         startup_name = record.startup_name if record else skeleton.get("company_profile", {}).get("name", "Unknown")
 
