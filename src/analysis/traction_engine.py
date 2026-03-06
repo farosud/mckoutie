@@ -312,7 +312,7 @@ async def _call_vps_proxy(
     logger.info(f"VPS proxy: {url}, model: {_model}, timeout: {timeout_seconds}s")
 
     last_error = None
-    max_attempts = 4  # More retries — VPS 502s are often transient (proxy restarting)
+    max_attempts = 2  # Keep low — VPS timeouts on large prompts waste minutes
     for attempt in range(max_attempts):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=15.0)) as client:
@@ -897,15 +897,26 @@ async def run_quick_analysis(startup_data: str) -> dict:
 async def run_core_analysis(startup_data: str) -> dict:
     """Phase A: Get company profile + 19 channel scores (no deep_dive).
 
-    Primary: VPS proxy Sonnet (free, Claude Max plan).
-    Fallback: OpenRouter Gemini Flash.
+    Primary: OpenRouter Sonnet (fast, reliable for large JSON).
+    Fallback: VPS proxy Sonnet (free but slow for big prompts).
     """
     prompt = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
     text = None
 
-    # PRIMARY: VPS proxy Sonnet (free — Claude Max plan)
-    if settings.has_vps_proxy:
-        logger.info("[PHASE A] Running core analysis via VPS proxy (Sonnet)...")
+    # PRIMARY: OpenRouter Sonnet (fast, handles large JSON reliably)
+    if settings.openrouter_api_key:
+        logger.info("[PHASE A] Running core analysis via OpenRouter (Sonnet)...")
+        try:
+            text = await _call_openrouter(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="anthropic/claude-sonnet-4", max_tokens=12000, timeout_seconds=180.0,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter Sonnet failed for Phase A: {e}")
+
+    # FALLBACK 1: VPS proxy Sonnet (free but can timeout on large prompts)
+    if text is None and settings.has_vps_proxy:
+        logger.info("[PHASE A] Falling back to VPS proxy (Sonnet)...")
         try:
             text = await _call_vps_proxy(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
@@ -914,7 +925,7 @@ async def run_core_analysis(startup_data: str) -> dict:
         except RuntimeError as e:
             logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
 
-    # FALLBACK: OpenRouter Gemini Flash
+    # FALLBACK 2: OpenRouter Gemini Flash (cheapest)
     if text is None and settings.openrouter_api_key:
         logger.info("[PHASE A] Falling back to OpenRouter (Gemini Flash)...")
         try:
@@ -924,17 +935,6 @@ async def run_core_analysis(startup_data: str) -> dict:
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Gemini Flash failed for Phase A: {e}")
-
-    # LAST RESORT: Anthropic direct
-    if text is None and settings.anthropic_api_key:
-        logger.info("[PHASE A] Falling back to Anthropic direct...")
-        try:
-            text = await _call_anthropic(
-                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=settings.analysis_model, max_tokens=8000,
-            )
-        except RuntimeError as e:
-            return {"error": f"All LLM providers failed: {e}"}
 
     if text is None:
         return {"error": "No LLM provider available"}
