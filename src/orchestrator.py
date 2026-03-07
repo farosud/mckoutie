@@ -28,6 +28,7 @@ import json
 import logging
 import random
 import time
+from pathlib import Path
 
 from src.config import settings
 from src.modules.twitter_poller import AnalysisRequest, TwitterPoller
@@ -59,6 +60,34 @@ _deep_analysis_in_progress: set[str] = set()
 
 # Track deep analysis progress for polling (report_id -> progress dict)
 _deep_progress: dict[str, dict] = {}
+
+
+def _persist_progress(report_id: str):
+    """Write current progress to disk so it survives deploys/restarts."""
+    progress = _deep_progress.get(report_id)
+    if not progress:
+        return
+    try:
+        _data_dir = Path("/data")
+        reports_dir = _data_dir / "reports" if _data_dir.is_dir() else Path(__file__).parent.parent / "reports"
+        progress_path = reports_dir / report_id / "progress.json"
+        progress_path.parent.mkdir(parents=True, exist_ok=True)
+        progress_path.write_text(json.dumps(progress, default=str))
+    except Exception as e:
+        logger.debug(f"Could not persist progress for {report_id}: {e}")
+
+
+def _load_progress_from_disk(report_id: str) -> dict | None:
+    """Load progress from disk if in-memory is empty (e.g. after deploy)."""
+    try:
+        _data_dir = Path("/data")
+        reports_dir = _data_dir / "reports" if _data_dir.is_dir() else Path(__file__).parent.parent / "reports"
+        progress_path = reports_dir / report_id / "progress.json"
+        if progress_path.exists():
+            return json.loads(progress_path.read_text())
+    except Exception:
+        pass
+    return None
 
 # --- Anti-spam state ---
 # Per-user cooldown: {author_id: last_processed_timestamp}
@@ -710,8 +739,17 @@ def is_deep_analysis_running(report_id: str) -> bool:
 
 
 def get_deep_progress(report_id: str) -> dict:
-    """Get the current progress of a deep analysis for polling."""
-    return _deep_progress.get(report_id, {})
+    """Get the current progress of a deep analysis for polling.
+    Falls back to disk if in-memory is empty (e.g. after a deploy)."""
+    progress = _deep_progress.get(report_id)
+    if progress:
+        return progress
+    # Try disk fallback
+    disk_progress = _load_progress_from_disk(report_id)
+    if disk_progress:
+        _deep_progress[report_id] = disk_progress
+        return disk_progress
+    return {}
 
 
 async def run_deep_analysis_background(report_id: str):
@@ -719,7 +757,55 @@ async def run_deep_analysis_background(report_id: str):
     Run deep analysis as a background task (no SSE).
     Updates _deep_progress dict so clients can poll for status.
     """
-    _deep_progress[report_id] = {"status": "starting", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []}
+    # Seed with skeleton's top_3_channels so the dashboard shows data IMMEDIATELY
+    # instead of waiting 2-5 min for the full LLM analysis to complete.
+    seed_channels = []
+    try:
+        from pathlib import Path
+        _data_dir = Path("/data")
+        reports_dir = _data_dir / "reports" if _data_dir.is_dir() else Path(__file__).parent.parent / "reports"
+        skel_path = reports_dir / report_id / "analysis.json"
+        if skel_path.exists():
+            import json as _json
+            skel = _json.loads(skel_path.read_text())
+            top3 = skel.get("top_3_channels", [])
+            # Convert top_3 (simple dicts with name/score/reason) to channel_analysis format
+            for i, t in enumerate(top3):
+                seed_channels.append({
+                    "channel": t.get("channel", t.get("name", f"Channel {i+1}")),
+                    "score": t.get("score", 8),
+                    "killer_insight": t.get("reason", t.get("insight", "")),
+                    "effort": "Medium",
+                    "timeline": "1-3 months",
+                    "budget": "$0-500",
+                    "first_move": t.get("first_move", ""),
+                    "_preliminary": True,  # Flag so deep analysis can replace these
+                })
+            # Also seed channels_meta from skeleton
+            if top3:
+                hot_take = skel.get("hot_take", "")
+                profile = skel.get("company_profile", {})
+    except Exception:
+        pass
+
+    initial_sections = {}
+    if seed_channels:
+        initial_sections["channels_meta"] = {
+            "bullseye_ranking": {"inner_ring": {"channels": [c["channel"] for c in seed_channels]}},
+            "executive_summary": "",
+            "hot_take": skel.get("hot_take", "") if 'skel' in dir() else "",
+            "company_profile": skel.get("company_profile", {}) if 'skel' in dir() else {},
+        }
+
+    _deep_progress[report_id] = {
+        "status": "Scoring 19 growth channels..." if not seed_channels else f"Analyzing all 19 channels (showing top {len(seed_channels)} preview)...",
+        "sections": initial_sections,
+        "channels": seed_channels,
+        "leads": [],
+        "investors": [],
+        "competitors": [],
+        "personas": [],
+    }
 
     try:
         async for event in run_deep_analysis(report_id):
@@ -733,14 +819,21 @@ async def run_deep_analysis_background(report_id: str):
                 if ch:
                     _deep_progress[report_id]["channels"].append(ch)
                 _deep_progress[report_id]["status"] = f"Analyzing channels ({len(_deep_progress[report_id]['channels'])}/19)"
+                # Persist after every few channels so dashboard fills even if we crash
+                if len(_deep_progress[report_id]["channels"]) % 5 == 0 or len(_deep_progress[report_id]["channels"]) >= 19:
+                    _persist_progress(report_id)
             elif ev_type == "persona":
                 p = ev_data.get("persona", {})
                 if p:
                     _deep_progress[report_id]["personas"].append(p)
+                    _persist_progress(report_id)
             elif ev_type == "lead":
                 l = ev_data.get("lead", {})
                 if l:
                     _deep_progress[report_id]["leads"].append(l)
+                    # Persist every 3 leads
+                    if len(_deep_progress[report_id]["leads"]) % 3 == 0:
+                        _persist_progress(report_id)
             elif ev_type == "competitor":
                 c = ev_data.get("competitor", {})
                 if c:
@@ -754,11 +847,14 @@ async def run_deep_analysis_background(report_id: str):
                 payload = ev_data.get("payload", {})
                 _deep_progress[report_id]["sections"][section] = payload
                 _deep_progress[report_id]["status"] = f"{section}_complete"
+                _persist_progress(report_id)
             elif ev_type == "done":
                 _deep_progress[report_id]["status"] = "complete"
+                _persist_progress(report_id)
             elif ev_type == "error":
                 _deep_progress[report_id]["status"] = "error"
                 _deep_progress[report_id]["error"] = ev_data.get("message", "Unknown error")
+                _persist_progress(report_id)
             elif ev_type == "already_complete":
                 _deep_progress[report_id]["status"] = "complete"
             elif ev_type == "already_running":
@@ -767,6 +863,7 @@ async def run_deep_analysis_background(report_id: str):
         logger.error(f"Background deep analysis failed for {report_id}: {e}", exc_info=True)
         _deep_progress[report_id]["status"] = "error"
         _deep_progress[report_id]["error"] = str(e)
+        _persist_progress(report_id)
 
 
 # =============================================================================
