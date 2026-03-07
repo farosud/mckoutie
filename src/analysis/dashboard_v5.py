@@ -1721,10 +1721,11 @@ def _streaming_js():
       var skel = section.querySelector('.streaming-skeleton');
       if(skel) skel.remove();
     }
-    var strip = section.querySelector('.comp-strip');
+    var strip = section.querySelector('.comp-strip') || section.querySelector('.comp-row');
     if(!strip){
       strip = document.createElement('div');
-      strip.className = 'comp-strip';
+      strip.className = 'comp-row';
+      strip.style.cssText = 'display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px';
       var header = section.querySelector('.section-header');
       if(header) header.insertAdjacentElement('afterend', strip);
     }
@@ -1799,7 +1800,8 @@ def _streaming_js():
     __REPORT_DATA__.budget = payload.budget_allocation||{};
     __REPORT_DATA__.risks = payload.risk_matrix||[];
     __REPORT_DATA__.moat = payload.competitive_moat||'';
-    var section = document.getElementById('strategy');
+    // Try multiple possible section IDs for strategy
+    var section = document.getElementById('strategy') || document.getElementById('plan');
     if(!section) return;
     var skel = section.querySelector('.streaming-skeleton');
     if(skel) skel.remove();
@@ -1872,7 +1874,7 @@ def _streaming_js():
   var pollCompetitorCount = 0;
   var pollPersonaCount = 0;
   var pollingActive = false;
-  var pollInterval = 2000;  // Start fast, slow down once data flows
+  var pollInterval = 1200;  // Keep updates feeling live
 
   function startPolling(){
     if(pollingActive) return;
@@ -1913,8 +1915,8 @@ def _streaming_js():
         }
         if(d.status) setStatus(d.status);
         renderPollData(d);
-        // Slow down polling once we have some data
-        var interval = (pollChannelCount > 0) ? 3000 : 2000;
+        // Stay relatively fast for a more "live" feel while analysis runs
+        var interval = (pollChannelCount > 0 || pollLeadCount > 0) ? 1500 : 1200;
         setTimeout(doPoll, interval);
       })
       .catch(function(err){

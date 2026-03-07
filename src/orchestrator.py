@@ -455,9 +455,11 @@ async def run_deep_analysis(report_id: str):
         # ==========================================================
         yield {"event": "thinking", "data": {"message": "Scoring 19 growth channels...", "detail": "Phase 1: evaluating channel fit for your startup"}}
 
-        # Run core analysis with heartbeat
-        _hb_queue: asyncio.Queue = asyncio.Queue()
+        # Shared event queue (heartbeat + progressive channel batches)
+        _event_queue: asyncio.Queue = asyncio.Queue()
         _hb_done = asyncio.Event()
+        emitted_channel_keys = set()
+        emitted_channel_count = 0
 
         async def _heartbeat():
             msgs = [
@@ -472,23 +474,48 @@ async def run_deep_analysis(report_id: str):
                 if _hb_done.is_set():
                     break
                 msg = msgs[idx % len(msgs)] if idx < len(msgs) else f"Scoring channels ({idx * 5}s)..."
-                await _hb_queue.put({"event": "thinking", "data": {"message": msg, "detail": ""}})
+                await _event_queue.put({"event": "thinking", "data": {"message": msg, "detail": ""}})
                 idx += 1
 
+        async def _on_core_batch(batch_channels, batch_names):
+            """Emit channel rows as each LLM batch finishes."""
+            nonlocal emitted_channel_count
+            if not batch_channels:
+                return
+            await _event_queue.put({
+                "event": "thinking",
+                "data": {
+                    "message": f"Batch complete: {len(batch_channels)} channels scored",
+                    "detail": ", ".join(batch_names[:3]),
+                },
+            })
+
+            for ch in sorted(batch_channels, key=lambda c: c.get("score", 0), reverse=True):
+                key = (ch.get("channel", "") or "").strip().lower()
+                if key and key in emitted_channel_keys:
+                    continue
+                if key:
+                    emitted_channel_keys.add(key)
+                await _event_queue.put({
+                    "event": "channel",
+                    "data": {"index": emitted_channel_count, "channel": ch},
+                })
+                emitted_channel_count += 1
+
         hb_task = asyncio.create_task(_heartbeat())
-        core_task = asyncio.create_task(run_core_analysis(startup_data))
+        core_task = asyncio.create_task(run_core_analysis(startup_data, on_batch_complete=_on_core_batch))
 
         while not core_task.done():
             try:
-                event = await asyncio.wait_for(_hb_queue.get(), timeout=1.0)
+                event = await asyncio.wait_for(_event_queue.get(), timeout=1.0)
                 yield event
             except asyncio.TimeoutError:
                 continue
 
         _hb_done.set()
         hb_task.cancel()
-        while not _hb_queue.empty():
-            yield await _hb_queue.get()
+        while not _event_queue.empty():
+            yield await _event_queue.get()
 
         analysis = core_task.result()
 
@@ -499,13 +526,19 @@ async def run_deep_analysis(report_id: str):
         if not analysis.get("company_profile"):
             analysis["company_profile"] = skeleton.get("company_profile", {})
 
-        # Stream channels immediately (scores + ideas, no deep_dive yet)
+        # Emit any channels not already emitted by progressive batches
         channels = analysis.get("channel_analysis", [])
         sorted_channels = sorted(channels, key=lambda c: c.get("score", 0), reverse=True)
-        for i, ch in enumerate(sorted_channels):
-            yield {"event": "thinking", "data": {"message": f"Channel {i+1}/{len(sorted_channels)}: {ch.get('channel', '')} — {ch.get('score', 0)}/10", "detail": ch.get('killer_insight', '')[:80]}}
-            yield {"event": "channel", "data": {"index": i, "channel": ch}}
-            await asyncio.sleep(0.1)
+        for ch in sorted_channels:
+            key = (ch.get("channel", "") or "").strip().lower()
+            if key and key in emitted_channel_keys:
+                continue
+            if key:
+                emitted_channel_keys.add(key)
+            yield {"event": "thinking", "data": {"message": f"Channel {emitted_channel_count+1}/{len(sorted_channels)}: {ch.get('channel', '')} — {ch.get('score', 0)}/10", "detail": ch.get('killer_insight', '')[:80]}}
+            yield {"event": "channel", "data": {"index": emitted_channel_count, "channel": ch}}
+            emitted_channel_count += 1
+            await asyncio.sleep(0.05)
 
         # Stream channels metadata
         yield {"event": "section", "data": {
@@ -526,8 +559,6 @@ async def run_deep_analysis(report_id: str):
         top_channels = sorted_channels[:8]
         batch1 = top_channels[:4]
         batch2 = top_channels[4:8]
-
-        _event_queue: asyncio.Queue = asyncio.Queue()
 
         # Deep dive tasks
         async def _deep_batch(batch, batch_num):

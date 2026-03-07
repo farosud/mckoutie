@@ -1153,7 +1153,7 @@ async def run_profile_strategy(startup_data: str, all_channels: list[dict]) -> d
     return result
 
 
-async def run_core_analysis(startup_data: str) -> dict:
+async def run_core_analysis(startup_data: str, on_batch_complete=None) -> dict:
     """Phase A: Get company profile + 19 channel scores (no deep_dive).
 
     BATCHED APPROACH: splits 19 channels into 3 batches of ~6-7 channels each.
@@ -1170,16 +1170,35 @@ async def run_core_analysis(startup_data: str) -> dict:
 
     logger.info(f"[PHASE A] Running batched analysis: {len(batch1_names)} + {len(batch2_names)} + {len(batch3_names)} channels")
 
-    # Run all 3 channel batches in parallel
-    batch1_task = asyncio.create_task(run_channel_batch(startup_data, batch1_names))
-    batch2_task = asyncio.create_task(run_channel_batch(startup_data, batch2_names))
-    batch3_task = asyncio.create_task(run_channel_batch(startup_data, batch3_names))
+    # Run all 3 channel batches in parallel and stream each batch as it completes.
+    async def _run_named_batch(batch_names: list[str]):
+        return batch_names, await run_channel_batch(startup_data, batch_names)
 
-    batch1_channels = await batch1_task
-    batch2_channels = await batch2_task
-    batch3_channels = await batch3_task
+    tasks = [
+        asyncio.create_task(_run_named_batch(batch1_names)),
+        asyncio.create_task(_run_named_batch(batch2_names)),
+        asyncio.create_task(_run_named_batch(batch3_names)),
+    ]
 
-    all_channels = batch1_channels + batch2_channels + batch3_channels
+    all_channels = []
+    for task in asyncio.as_completed(tasks):
+        try:
+            batch_names, batch_channels = await task
+        except Exception as e:
+            logger.warning(f"[PHASE A] Channel batch failed: {e}")
+            batch_names = []
+            batch_channels = []
+
+        all_channels.extend(batch_channels)
+
+        if on_batch_complete:
+            try:
+                maybe_coro = on_batch_complete(batch_channels, batch_names)
+                if asyncio.iscoroutine(maybe_coro):
+                    await maybe_coro
+            except Exception as e:
+                logger.warning(f"[PHASE A] on_batch_complete callback failed: {e}")
+
     logger.info(f"[PHASE A] Got {len(all_channels)} channels total from batches")
 
     if len(all_channels) == 0:

@@ -1972,6 +1972,7 @@ async def _handle_analyze(request: Request):
     logger.info(f"[ANALYZE] Received {request.method} request")
     try:
         from src.analysis.report_generator import generate_report_id, save_report
+        from src.analysis.traction_engine import run_quick_analysis
         from src.modules.report_store import ReportRecord, save_record
         import re as _re
 
@@ -2046,11 +2047,29 @@ async def _handle_analyze(request: Request):
         }
         save_report(report_id, skeleton_data, "")
 
+        # Try a fast quick-analysis prefill BEFORE redirect, so dashboard has
+        # immediate top channels to render while deep analysis streams.
+        try:
+            quick_prefill = await asyncio.wait_for(
+                run_quick_analysis(f"## WEBSITE DATA\nURL: {raw_url}"),
+                timeout=10.0,
+            )
+            top3 = quick_prefill.get("top_3_channels", []) if isinstance(quick_prefill, dict) else []
+            if top3:
+                skeleton_data["top_3_channels"] = top3
+                skeleton_data["hot_take"] = quick_prefill.get("hot_take", "") if isinstance(quick_prefill, dict) else ""
+                profile = quick_prefill.get("company_profile", {}) if isinstance(quick_prefill, dict) else {}
+                if profile:
+                    skeleton_data["company_profile"] = profile
+                save_report(report_id, skeleton_data, "")
+                logger.info(f"[ANALYZE] Quick prefill ready for {report_id} with {len(top3)} channels")
+        except Exception as e:
+            logger.info(f"[ANALYZE] Quick prefill skipped for {report_id}: {e}")
+
         # Kick off scrape + quick analysis in background (non-blocking)
         async def _bg_quick_analyze(rid: str, url: str):
             try:
                 from src.modules.scraper import scrape_website
-                from src.analysis.traction_engine import run_quick_analysis
                 from src.modules.report_store import update_status
 
                 site_data = await scrape_website(url)
