@@ -2117,6 +2117,38 @@ async def health():
     return {"status": "ok", "service": "mckoutie", "version": "0.1.0"}
 
 
+@app.get("/debug/report/{report_id}")
+async def debug_report(report_id: str):
+    """Debug: show report file metadata (no sensitive data)."""
+    analysis_path = REPORTS_DIR / report_id / "analysis.json"
+    record_path = REPORTS_DIR / report_id / "record.json"
+    result = {
+        "report_id": report_id,
+        "reports_dir": str(REPORTS_DIR),
+        "analysis_exists": analysis_path.exists(),
+        "record_exists": record_path.exists(),
+    }
+    if analysis_path.exists():
+        try:
+            data = json.loads(analysis_path.read_text())
+            sd = data.get("_startup_data", "")
+            result["_phase"] = data.get("_phase", "unknown")
+            result["_startup_data_len"] = len(sd) if sd else 0
+            result["_startup_data_preview"] = sd[:200] if sd else "(empty)"
+            result["has_channels"] = len(data.get("channel_analysis", [])) > 0
+            result["company_name"] = data.get("company_profile", {}).get("name", "")
+        except Exception as e:
+            result["analysis_error"] = str(e)
+    if record_path.exists():
+        try:
+            rec = json.loads(record_path.read_text())
+            result["target"] = rec.get("target", "")
+            result["status"] = rec.get("status", "")
+        except Exception as e:
+            result["record_error"] = str(e)
+    return result
+
+
 @app.get("/stats")
 async def stats():
     all_reports = report_store.list_reports()
