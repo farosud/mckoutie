@@ -1312,15 +1312,15 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         except Exception as e:
             logger.error(f"Failed to reset analysis phase: {e}")
 
-    # Stream for skeleton reports when user is logged in, OR when deep analysis is already running.
-    should_stream = is_skeleton and logged_in
-    # Also stream if deep analysis is currently running (e.g. user refreshed mid-analysis)
-    if not should_stream and is_deep_analysis_running(report_id):
-        should_stream = True
+    # Stream for skeleton reports regardless of login status.
+    # Login gate is cosmetic (overlay) — deep analysis should start for anyone who visits.
+    # This fixes the issue where Vercel proxy strips cookies, leaving logged_in=False
+    # even after successful OAuth, which prevented deep analysis from ever starting.
+    should_stream = is_skeleton or is_deep_analysis_running(report_id)
 
-    # Start deep analysis when user is LOGGED IN and viewing a skeleton.
-    if is_skeleton and logged_in and not is_deep_analysis_running(report_id):
-        logger.info(f"[REPORT VIEW] Starting deep analysis for skeleton {report_id} (logged_in=True)")
+    # Start deep analysis for ANY visitor viewing a skeleton report.
+    if is_skeleton and not is_deep_analysis_running(report_id):
+        logger.info(f"[REPORT VIEW] Starting deep analysis for skeleton {report_id} (logged_in={logged_in})")
         asyncio.create_task(run_deep_analysis_background(report_id))
     elif is_skeleton:
         logger.info(f"[REPORT VIEW] Skeleton report {report_id} — streaming={should_stream} logged_in={logged_in} deep_running={is_deep_analysis_running(report_id)}")
@@ -1638,22 +1638,20 @@ async def poll_deep_progress(request: Request, report_id: str):
     if is_deep_analysis_running(report_id):
         return JSONResponse({"status": "Analysis starting...", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
 
-    # If analysis hasn't started and report is still a skeleton, start it —
-    # but ONLY if user is authenticated (don't waste resources on bots/crawlers).
+    # If analysis hasn't started and report is still a skeleton, start it.
+    # No auth check — the page view already started it, this is a safety net
+    # for cases where the background task didn't launch (race condition, restart, etc.)
     if not is_deep_analysis_running(report_id):
-        session_cookie = request.cookies.get("mckoutie_session")
-        user = auth.get_session_user(session_cookie)
-        if user:
-            analysis_path = REPORTS_DIR / report_id / "analysis.json"
-            if analysis_path.exists():
-                try:
-                    analysis_check = json.loads(analysis_path.read_text())
-                    if analysis_check.get("_phase") != "complete":
-                        logger.info(f"[PROGRESS] Starting deep analysis for {report_id} via polling safety net (user={user.get('username')})")
-                        asyncio.create_task(run_deep_analysis_background(report_id))
-                        return JSONResponse({"status": "starting", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
-                except Exception:
-                    pass
+        analysis_path_check = REPORTS_DIR / report_id / "analysis.json"
+        if analysis_path_check.exists():
+            try:
+                analysis_check = json.loads(analysis_path_check.read_text())
+                if analysis_check.get("_phase") != "complete":
+                    logger.info(f"[PROGRESS] Starting deep analysis for {report_id} via polling safety net")
+                    asyncio.create_task(run_deep_analysis_background(report_id))
+                    return JSONResponse({"status": "starting", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
+            except Exception:
+                pass
 
     return JSONResponse({"status": "not_started", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
 
