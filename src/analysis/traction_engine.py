@@ -813,11 +813,15 @@ async def _generate_deep_dives(startup_data: str, analysis: dict, channels_batch
             logger.warning(f"OpenRouter Gemini Flash failed for deep dives: {e}")
 
     if text is None:
+        logger.warning("[DEEP DIVE] All LLM providers failed — no text returned")
         return {}
 
     result = _parse_json_response(text)
     if "error" in result:
+        logger.warning(f"[DEEP DIVE] JSON parse failed: {result.get('error', 'unknown')}. Raw text (first 200): {text[:200]}")
         return {}
+    if not result:
+        logger.warning(f"[DEEP DIVE] Parsed result is empty. Raw text (first 200): {text[:200]}")
     return result
 
 
@@ -928,15 +932,27 @@ async def run_quick_analysis(startup_data: str) -> dict:
 async def run_core_analysis(startup_data: str) -> dict:
     """Phase A: Get company profile + 19 channel scores (no deep_dive).
 
-    Primary: OpenRouter Sonnet (fast, reliable for large JSON).
-    Fallback: VPS proxy Sonnet (free but slow for big prompts).
+    Primary: VPS proxy Sonnet (free on Max plan).
+    Fallback: OpenRouter Sonnet, then Gemini Flash.
     """
     prompt = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
     text = None
 
-    # PRIMARY: OpenRouter Sonnet (fast, handles large JSON reliably)
-    if settings.openrouter_api_key:
-        logger.info("[PHASE A] Running core analysis via OpenRouter (Sonnet)...")
+    # PRIMARY: VPS proxy Sonnet (free, our own server)
+    if settings.has_vps_proxy:
+        logger.info("[PHASE A] Running core analysis via VPS proxy (Sonnet)...")
+        try:
+            text = await _call_vps_proxy(
+                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
+                model="claude-sonnet-4", max_tokens=16000, timeout_seconds=300.0,
+            )
+            logger.info(f"[PHASE A] VPS proxy returned {len(text)} chars")
+        except RuntimeError as e:
+            logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
+
+    # FALLBACK 1: OpenRouter Sonnet
+    if text is None and settings.openrouter_api_key:
+        logger.info("[PHASE A] Falling back to OpenRouter (Sonnet)...")
         try:
             text = await _call_openrouter(
                 prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
@@ -944,17 +960,6 @@ async def run_core_analysis(startup_data: str) -> dict:
             )
         except RuntimeError as e:
             logger.warning(f"OpenRouter Sonnet failed for Phase A: {e}")
-
-    # FALLBACK 1: VPS proxy Sonnet (free but can timeout on large prompts)
-    if text is None and settings.has_vps_proxy:
-        logger.info("[PHASE A] Falling back to VPS proxy (Sonnet)...")
-        try:
-            text = await _call_vps_proxy(
-                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="claude-sonnet-4", max_tokens=16000, timeout_seconds=300.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
 
     # FALLBACK 2: OpenRouter Gemini Flash (cheapest)
     if text is None and settings.openrouter_api_key:

@@ -1233,12 +1233,20 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         except Exception:
             pass
 
-    # Check login status
+    # Check login status — try cookie first, then URL token param (OAuth redirect)
     session_cookie = request.cookies.get("mckoutie_session")
     user = auth.get_session_user(session_cookie)
+    token_from_url = request.query_params.get("_token")
+    set_cookie_token = None
+    if user is None and token_from_url:
+        # OAuth just redirected back with token in URL — verify it server-side
+        user = auth.get_session_user(token_from_url)
+        if user:
+            set_cookie_token = token_from_url  # We'll set the cookie on the response
+            logger.info(f"[REPORT VIEW] Authenticated via URL _token for @{user.get('username')}")
     logged_in = user is not None
     login_url = f"/auth/twitter?redirect={quote(f'/report/{report_id}')}"
-    logger.info(f"[REPORT VIEW] report={report_id} logged_in={logged_in} cookie={'yes' if session_cookie else 'no'} user={user.get('username') if user else 'none'} phase={analysis.get('_phase', 'n/a')} record_status={record.status}")
+    logger.info(f"[REPORT VIEW] report={report_id} logged_in={logged_in} cookie={'yes' if session_cookie else 'no'} token_url={'yes' if token_from_url else 'no'} user={user.get('username') if user else 'none'} phase={analysis.get('_phase', 'n/a')} record_status={record.status}")
 
     # Determine tier based on subscription status + ownership
     tier = "free"
@@ -1284,14 +1292,17 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
     # Determine if this is a skeleton report that needs deep analysis
     is_skeleton = analysis.get("_phase") == "skeleton" or record.status == "skeleton"
 
-    # Also detect "complete but empty" — deep analysis ran but channels were empty.
-    # This happens when the LLM returned a malformed response. Allow re-trigger.
+    # Detect "complete but empty" — deep analysis ran but channels/leads were empty.
+    # This happens when the LLM returned a malformed response or enrichment failed.
+    channels_count = len(analysis.get("channel_analysis", []))
+    leads_count = len(analysis.get("leads_research", {}).get("leads", []))
+    investors_count = len(analysis.get("investor_research", {}).get("competitors", []))
     is_complete_but_empty = (
         analysis.get("_phase") == "complete"
-        and len(analysis.get("channel_analysis", [])) == 0
+        and (channels_count == 0 or (leads_count == 0 and investors_count == 0))
     )
     if is_complete_but_empty:
-        logger.warning(f"[REPORT VIEW] Report {report_id} is 'complete' but has 0 channels — resetting to skeleton for re-analysis")
+        logger.warning(f"[REPORT VIEW] Report {report_id} is 'complete' but incomplete data (ch={channels_count} leads={leads_count} inv={investors_count}) — resetting to skeleton for re-analysis")
         analysis["_phase"] = "skeleton"
         is_skeleton = True
         # Save the reset phase so the SSE endpoint also sees it
@@ -1301,16 +1312,15 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         except Exception as e:
             logger.error(f"Failed to reset analysis phase: {e}")
 
-    # Enable streaming for ANY skeleton report — login is checked by the overlay,
-    # but if someone got past it (or came back with a cookie), always stream.
-    should_stream = is_skeleton
+    # Stream for skeleton reports when user is logged in, OR when deep analysis is already running.
+    should_stream = is_skeleton and logged_in
+    # Also stream if deep analysis is currently running (e.g. user refreshed mid-analysis)
+    if not should_stream and is_deep_analysis_running(report_id):
+        should_stream = True
 
-    # Start deep analysis as a background task IMMEDIATELY on page load.
-    # Both SSE and polling will read from the same _deep_progress dict.
-    # Start for ANY visitor (logged in or not) — the login overlay is cosmetic,
-    # analysis should begin so data is ready when they authenticate.
-    if is_skeleton and not is_deep_analysis_running(report_id):
-        logger.info(f"[REPORT VIEW] Starting deep analysis for skeleton {report_id} on page load (logged_in={logged_in})")
+    # Start deep analysis when user is LOGGED IN and viewing a skeleton.
+    if is_skeleton and logged_in and not is_deep_analysis_running(report_id):
+        logger.info(f"[REPORT VIEW] Starting deep analysis for skeleton {report_id} (logged_in=True)")
         asyncio.create_task(run_deep_analysis_background(report_id))
     elif is_skeleton:
         logger.info(f"[REPORT VIEW] Skeleton report {report_id} — streaming={should_stream} logged_in={logged_in} deep_running={is_deep_analysis_running(report_id)}")
@@ -1329,7 +1339,19 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         streaming=should_stream,
         sse_base_url=settings.railway_public_url if should_stream else "",
     )
-    return HTMLResponse(content=html)
+    response = HTMLResponse(content=html)
+    # If we authenticated via URL token, set the cookie so future requests don't need the token
+    if set_cookie_token:
+        response.set_cookie(
+            "mckoutie_session",
+            set_cookie_token,
+            max_age=30 * 24 * 3600,
+            httponly=False,
+            secure=True,
+            samesite="lax",
+            path="/",
+        )
+    return response
 
 
 @app.get("/report/{report_id}/debug")
@@ -1616,19 +1638,22 @@ async def poll_deep_progress(request: Request, report_id: str):
     if is_deep_analysis_running(report_id):
         return JSONResponse({"status": "Analysis starting...", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
 
-    # If analysis hasn't started and report is still a skeleton, start it now.
-    # Deep analysis handles scraping internally — don't gate on startup_data length here.
+    # If analysis hasn't started and report is still a skeleton, start it —
+    # but ONLY if user is authenticated (don't waste resources on bots/crawlers).
     if not is_deep_analysis_running(report_id):
-        analysis_path = REPORTS_DIR / report_id / "analysis.json"
-        if analysis_path.exists():
-            try:
-                analysis_check = json.loads(analysis_path.read_text())
-                if analysis_check.get("_phase") != "complete":
-                    logger.info(f"[PROGRESS] Starting deep analysis for {report_id} via polling safety net")
-                    asyncio.create_task(run_deep_analysis_background(report_id))
-                    return JSONResponse({"status": "starting", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
-            except Exception:
-                pass
+        session_cookie = request.cookies.get("mckoutie_session")
+        user = auth.get_session_user(session_cookie)
+        if user:
+            analysis_path = REPORTS_DIR / report_id / "analysis.json"
+            if analysis_path.exists():
+                try:
+                    analysis_check = json.loads(analysis_path.read_text())
+                    if analysis_check.get("_phase") != "complete":
+                        logger.info(f"[PROGRESS] Starting deep analysis for {report_id} via polling safety net (user={user.get('username')})")
+                        asyncio.create_task(run_deep_analysis_background(report_id))
+                        return JSONResponse({"status": "starting", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
+                except Exception:
+                    pass
 
     return JSONResponse({"status": "not_started", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
 

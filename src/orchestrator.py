@@ -507,7 +507,7 @@ async def run_deep_analysis(report_id: str):
                 await _event_queue.put({"event": "thinking", "data": {"message": f"Deep-diving: {', '.join(names[:3])}...", "detail": f"Generating actionable research for top channels (batch {batch_num})"}})
                 dives = await asyncio.wait_for(
                     run_deep_dives_batch(startup_data, analysis, batch),
-                    timeout=120,
+                    timeout=180,
                 )
                 # Merge into channels and emit updates
                 for ch_name, dive_data in dives.items():
@@ -517,8 +517,12 @@ async def run_deep_analysis(report_id: str):
                             await _event_queue.put({"event": "channel_update", "data": {"index": idx, "deep_dive": dive_data}})
                             await _event_queue.put({"event": "thinking", "data": {"message": f"Deep dive ready: {ch_name}", "detail": f"{len(dive_data.get('actions', []))} actions, {len(dive_data.get('research', []))} research items"}})
                             break
+                if not dives:
+                    logger.warning(f"Deep dive batch {batch_num} returned empty result (channels: {names})")
+            except asyncio.TimeoutError:
+                logger.warning(f"Deep dive batch {batch_num} timed out after 180s (channels: {[c.get('channel','') for c in batch]})")
             except Exception as e:
-                logger.warning(f"Deep dive batch {batch_num} failed: {e}")
+                logger.warning(f"Deep dive batch {batch_num} failed: {type(e).__name__}: {e}", exc_info=True)
 
         # Lead/investor callbacks push to the shared _event_queue
         leads_data = {}
