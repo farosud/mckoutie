@@ -1312,18 +1312,12 @@ async def view_report(request: Request, report_id: str, paid: str | None = None)
         except Exception as e:
             logger.error(f"Failed to reset analysis phase: {e}")
 
-    # Stream for skeleton reports regardless of login status.
-    # Login gate is cosmetic (overlay) — deep analysis should start for anyone who visits.
-    # This fixes the issue where Vercel proxy strips cookies, leaving logged_in=False
-    # even after successful OAuth, which prevented deep analysis from ever starting.
+    # Show streaming UI for skeleton reports (analysis starts on first JS poll, not here).
+    # This prevents Twitter card unfurlers / bots from triggering expensive analysis.
     should_stream = is_skeleton or is_deep_analysis_running(report_id)
 
-    # Start deep analysis for ANY visitor viewing a skeleton report.
-    if is_skeleton and not is_deep_analysis_running(report_id):
-        logger.info(f"[REPORT VIEW] Starting deep analysis for skeleton {report_id} (logged_in={logged_in})")
-        asyncio.create_task(run_deep_analysis_background(report_id))
-    elif is_skeleton:
-        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — streaming={should_stream} logged_in={logged_in} deep_running={is_deep_analysis_running(report_id)}")
+    if is_skeleton:
+        logger.info(f"[REPORT VIEW] Skeleton report {report_id} — streaming={should_stream} logged_in={logged_in} deep_running={is_deep_analysis_running(report_id)}. Analysis deferred to first poll.")
 
     # Render the dashboard — with streaming flag for skeleton reports
     # SSE connects DIRECTLY to Railway (bypasses Vercel proxy which kills long-lived connections)

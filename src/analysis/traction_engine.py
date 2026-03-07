@@ -296,29 +296,27 @@ async def _call_vps_proxy(
     system_prompt: str = ANALYSIS_SYSTEM_PROMPT,
     model: str | None = None,
     max_tokens: int | None = None,
-    timeout_seconds: float = 240.0,
+    timeout_seconds: float = 600.0,
 ) -> str:
-    """Call the VPS Claude proxy (Claude Code Max plan).
+    """Call the VPS Claude proxy (Claude Code Max plan) using STREAMING.
 
-    Args:
-        prompt: User prompt text.
-        system_prompt: System prompt for the model.
-        model: Model ID to use (defaults to settings.analysis_model).
-        max_tokens: Max tokens for the response.
-        timeout_seconds: Request timeout in seconds (default 240s for Sonnet).
+    Uses streaming so the HTTP connection stays alive while tokens generate.
+    This prevents timeout on large responses (16K+ tokens can take 3-5 min).
     """
     url = f"{settings.vps_proxy_url.rstrip('/')}/chat/completions"
     _model = model or settings.analysis_model
     _max_tokens = max_tokens or settings.analysis_max_tokens
 
-    logger.info(f"VPS proxy: {url}, model: {_model}, timeout: {timeout_seconds}s")
+    logger.info(f"VPS proxy (streaming): {url}, model: {_model}, timeout: {timeout_seconds}s")
 
     last_error = None
-    max_attempts = 2  # Keep low — VPS timeouts on large prompts waste minutes
+    max_attempts = 2
     for attempt in range(max_attempts):
         try:
+            # Use streaming to keep connection alive during long generation
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=15.0)) as client:
-                resp = await client.post(
+                async with client.stream(
+                    "POST",
                     url,
                     headers={
                         "Content-Type": "application/json",
@@ -327,33 +325,53 @@ async def _call_vps_proxy(
                     json={
                         "model": _model,
                         "max_tokens": _max_tokens,
+                        "stream": True,
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": prompt},
                         ],
                     },
-                )
+                ) as resp:
+                    if resp.status_code != 200:
+                        body = await resp.aread()
+                        body_text = body.decode("utf-8", errors="replace")
+                        logger.error(
+                            f"VPS proxy returned {resp.status_code} on attempt {attempt + 1}/{max_attempts}: {body_text[:1000]}"
+                        )
+                        last_error = f"HTTP {resp.status_code}: {body_text[:500]}"
+                        backoff = 3 * (2 ** attempt)
+                        await asyncio.sleep(backoff)
+                        continue
 
-                if resp.status_code != 200:
-                    body = resp.text
-                    logger.error(
-                        f"VPS proxy returned {resp.status_code} on attempt {attempt + 1}/{max_attempts}: {body[:1000]}"
-                    )
-                    last_error = f"HTTP {resp.status_code}: {body[:500]}"
-                    # Exponential backoff: 3s, 6s, 12s, 24s
-                    backoff = 3 * (2 ** attempt)
-                    logger.info(f"VPS proxy retry in {backoff}s...")
-                    await asyncio.sleep(backoff)
-                    continue
+                    # Collect streamed chunks
+                    collected = []
+                    chunk_count = 0
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        payload = line[6:]
+                        if payload.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(payload)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                collected.append(content)
+                                chunk_count += 1
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
 
-                data = resp.json()
+                    text = "".join(collected)
+                    if not text:
+                        # Streaming returned nothing — maybe proxy doesn't support streaming.
+                        # Fall back to non-streaming request.
+                        logger.warning(f"VPS streaming returned 0 chunks, trying non-streaming fallback")
+                        raise ValueError("Empty streaming response — try non-streaming")
 
-                choices = data.get("choices")
-                if not choices or not choices[0].get("message", {}).get("content"):
-                    logger.warning(f"VPS proxy returned empty/malformed response: {data}")
-                    raise ValueError("Empty response from VPS proxy")
+                    logger.info(f"VPS proxy streaming: {chunk_count} chunks, {len(text)} chars total")
+                    return text
 
-                return choices[0]["message"]["content"]
         except httpx.TimeoutException as e:
             last_error = f"timeout after {timeout_seconds}s ({type(e).__name__})"
             logger.warning(f"VPS proxy timeout on attempt {attempt + 1}/{max_attempts}: {last_error}")
@@ -361,6 +379,35 @@ async def _call_vps_proxy(
         except httpx.ConnectError as e:
             last_error = f"connect error: {e}"
             logger.warning(f"VPS proxy connect error on attempt {attempt + 1}/{max_attempts}: {last_error}")
+            await asyncio.sleep(3 * (2 ** attempt))
+        except ValueError as e:
+            # Empty streaming response — try non-streaming as final fallback
+            logger.info(f"VPS proxy: streaming empty, trying non-streaming on attempt {attempt + 1}")
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=15.0)) as client:
+                    resp = await client.post(
+                        url,
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Proxy-Key": settings.vps_proxy_key,
+                        },
+                        json={
+                            "model": _model,
+                            "max_tokens": _max_tokens,
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": prompt},
+                            ],
+                        },
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        choices = data.get("choices")
+                        if choices and choices[0].get("message", {}).get("content"):
+                            return choices[0]["message"]["content"]
+                    last_error = f"non-streaming fallback also failed: {resp.status_code}"
+            except Exception as e2:
+                last_error = f"non-streaming fallback error: {e2}"
             await asyncio.sleep(3 * (2 ** attempt))
         except Exception as e:
             last_error = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
@@ -929,75 +976,230 @@ async def run_quick_analysis(startup_data: str) -> dict:
     return result
 
 
+BATCH_CHANNELS_PROMPT = """Analyze this startup for SPECIFIC traction channels.
+
+## STARTUP DATA
+
+{startup_data}
+
+## YOUR TASK
+
+Score ONLY these channels for this startup:
+{channel_list}
+
+Return valid JSON with this structure:
+
+{{
+  "channel_analysis": [
+    {{
+      "channel": "string — channel name (MUST match exactly from the list above)",
+      "score": "number 1-10 — fit for this specific startup",
+      "effort": "string — low | medium | high",
+      "timeline": "string — days | weeks | months to see results",
+      "budget": "string — estimated budget to test ($0, $50, $500, $5K, etc.)",
+      "specific_ideas": ["3-5 SPECIFIC tactical ideas for THIS startup"],
+      "first_move": "string — the very first concrete action to take",
+      "why_or_why_not": "string — honest assessment of why this channel does or doesn't fit",
+      "killer_insight": "string — one non-obvious insight about using this channel"
+    }}
+  ]
+}}
+
+Score honestly — some channels should be 1-2. Be brutally specific to THIS startup.
+Do NOT include deep_dive or hot_take.
+"""
+
+PROFILE_STRATEGY_PROMPT = """Analyze this startup and produce the strategic overview.
+
+## STARTUP DATA
+
+{startup_data}
+
+## CHANNEL SCORES (already computed)
+{channel_scores}
+
+## YOUR TASK
+
+Return valid JSON with this structure:
+
+{{
+  "company_profile": {{
+    "name": "string — company/product name",
+    "one_liner": "string — what they do in one sentence",
+    "stage": "string — pre-launch | launched | growing | scaling",
+    "estimated_size": "string — solo | small team (2-5) | medium (6-20) | large (20+)",
+    "market": "string — target market description",
+    "business_model": "string — how they make/plan to make money",
+    "strengths": ["list of 3-5 key strengths"],
+    "weaknesses": ["list of 3-5 key weaknesses/risks"],
+    "unique_angle": "string — what makes them genuinely different"
+  }},
+
+  "executive_summary": "string — 3-4 paragraph executive summary. Sharp enough to share standalone.",
+
+  "bullseye_ranking": {{
+    "inner_ring": {{
+      "channels": ["top 3 channels to test RIGHT NOW"],
+      "reasoning": "string — why these 3 specifically"
+    }},
+    "promising": {{
+      "channels": ["4-6 channels worth testing next"],
+      "reasoning": "string"
+    }},
+    "long_shot": {{
+      "channels": ["remaining channels"],
+      "reasoning": "string"
+    }}
+  }},
+
+  "ninety_day_plan": {{
+    "month_1": {{ "focus": "string", "actions": ["5-7 specific actions"], "target_metric": "string", "budget": "string" }},
+    "month_2": {{ "focus": "string", "actions": ["5-7 specific actions"], "target_metric": "string", "budget": "string" }},
+    "month_3": {{ "focus": "string", "actions": ["5-7 specific actions"], "target_metric": "string", "budget": "string" }}
+  }},
+
+  "budget_allocation": {{
+    "total_recommended": "string",
+    "breakdown": [{{ "channel": "string", "amount": "string", "rationale": "string" }}]
+  }},
+
+  "risk_matrix": [
+    {{ "risk": "string", "probability": "string — low|medium|high", "impact": "string — low|medium|high", "mitigation": "string" }}
+  ],
+
+  "competitive_moat": "string — 2-3 paragraphs on long-term defensibility"
+}}
+
+Be brutally specific to THIS startup.
+"""
+
+
+async def _call_llm_with_fallbacks(prompt: str, system_prompt: str, max_tokens: int = 6000, timeout: float = 120.0) -> str | None:
+    """Try VPS proxy -> OpenRouter Sonnet -> OpenRouter Gemini Flash. Returns text or None."""
+    text = None
+
+    if settings.has_vps_proxy:
+        try:
+            text = await _call_vps_proxy(
+                prompt, system_prompt=system_prompt,
+                model="claude-sonnet-4", max_tokens=max_tokens, timeout_seconds=timeout,
+            )
+        except RuntimeError as e:
+            logger.warning(f"VPS proxy failed: {e}")
+
+    if text is None and settings.openrouter_api_key:
+        try:
+            text = await _call_openrouter(
+                prompt, system_prompt=system_prompt,
+                model="anthropic/claude-sonnet-4", max_tokens=max_tokens, timeout_seconds=timeout,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter Sonnet failed: {e}")
+
+    if text is None and settings.openrouter_api_key:
+        try:
+            text = await _call_openrouter(
+                prompt, system_prompt=system_prompt,
+                model="google/gemini-2.5-flash", max_tokens=max_tokens, timeout_seconds=timeout,
+            )
+        except RuntimeError as e:
+            logger.warning(f"OpenRouter Gemini Flash failed: {e}")
+
+    return text
+
+
+async def run_channel_batch(startup_data: str, channel_names: list[str]) -> list[dict]:
+    """Analyze a batch of channels (typically 6-7). Returns list of channel dicts."""
+    channel_list = "\n".join(f"- {name}" for name in channel_names)
+    prompt = BATCH_CHANNELS_PROMPT.format(startup_data=startup_data, channel_list=channel_list)
+
+    logger.info(f"[BATCH] Analyzing {len(channel_names)} channels: {', '.join(channel_names[:3])}...")
+
+    text = await _call_llm_with_fallbacks(prompt, ANALYSIS_SYSTEM_PROMPT, max_tokens=6000, timeout=180.0)
+
+    if text is None:
+        logger.error(f"[BATCH] All providers failed for channels: {channel_names}")
+        return []
+
+    result = _parse_json_response(text)
+    channels = result.get("channel_analysis", [])
+    logger.info(f"[BATCH] Got {len(channels)} channels back")
+
+    for ch in channels:
+        if "deep_dive" not in ch:
+            ch["deep_dive"] = {"research_type": "general", "actions": [], "research": []}
+
+    return channels
+
+
+async def run_profile_strategy(startup_data: str, all_channels: list[dict]) -> dict:
+    """Generate company profile, bullseye, 90-day plan, budget, risk matrix from channel scores."""
+    channel_scores = "\n".join(
+        f"- {ch.get('channel', '?')}: {ch.get('score', 0)}/10 ({ch.get('effort', '?')} effort)"
+        for ch in sorted(all_channels, key=lambda c: c.get("score", 0), reverse=True)
+    )
+    prompt = PROFILE_STRATEGY_PROMPT.format(startup_data=startup_data, channel_scores=channel_scores)
+
+    logger.info("[STRATEGY] Generating profile + strategy...")
+
+    text = await _call_llm_with_fallbacks(prompt, ANALYSIS_SYSTEM_PROMPT, max_tokens=6000, timeout=180.0)
+
+    if text is None:
+        logger.error("[STRATEGY] All providers failed")
+        return {}
+
+    result = _parse_json_response(text)
+    logger.info(f"[STRATEGY] Generated profile for {result.get('company_profile', {}).get('name', 'Unknown')}")
+    return result
+
+
 async def run_core_analysis(startup_data: str) -> dict:
     """Phase A: Get company profile + 19 channel scores (no deep_dive).
+
+    BATCHED APPROACH: splits 19 channels into 3 batches of ~6-7 channels each.
+    Each batch completes in ~60-90s (well within VPS timeout).
+    Channels stream to dashboard as each batch finishes.
 
     Primary: VPS proxy Sonnet (free on Max plan).
     Fallback: OpenRouter Sonnet, then Gemini Flash.
     """
-    prompt = ANALYSIS_PROMPT_CORE.format(startup_data=startup_data)
-    text = None
+    # Split 19 channels into 3 batches
+    batch1_names = CHANNELS[:7]   # Viral, PR, UPR, SEM, Social Ads, Offline Ads, SEO
+    batch2_names = CHANNELS[7:13] # Content, Email, Engineering, Blogs, BizDev, Sales
+    batch3_names = CHANNELS[13:]  # Affiliate, Platforms, Trade Shows, Offline Events, Speaking, Community
 
-    # PRIMARY: VPS proxy Sonnet (free, our own server)
-    if settings.has_vps_proxy:
-        logger.info("[PHASE A] Running core analysis via VPS proxy (Sonnet)...")
-        try:
-            text = await _call_vps_proxy(
-                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="claude-sonnet-4", max_tokens=16000, timeout_seconds=300.0,
-            )
-            logger.info(f"[PHASE A] VPS proxy returned {len(text)} chars")
-        except RuntimeError as e:
-            logger.warning(f"VPS proxy Sonnet failed for Phase A: {e}")
+    logger.info(f"[PHASE A] Running batched analysis: {len(batch1_names)} + {len(batch2_names)} + {len(batch3_names)} channels")
 
-    # FALLBACK 1: OpenRouter Sonnet
-    if text is None and settings.openrouter_api_key:
-        logger.info("[PHASE A] Falling back to OpenRouter (Sonnet)...")
-        try:
-            text = await _call_openrouter(
-                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="anthropic/claude-sonnet-4", max_tokens=16000, timeout_seconds=180.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"OpenRouter Sonnet failed for Phase A: {e}")
+    # Run all 3 channel batches in parallel
+    batch1_task = asyncio.create_task(run_channel_batch(startup_data, batch1_names))
+    batch2_task = asyncio.create_task(run_channel_batch(startup_data, batch2_names))
+    batch3_task = asyncio.create_task(run_channel_batch(startup_data, batch3_names))
 
-    # FALLBACK 2: OpenRouter Gemini Flash (cheapest)
-    if text is None and settings.openrouter_api_key:
-        logger.info("[PHASE A] Falling back to OpenRouter (Gemini Flash)...")
-        try:
-            text = await _call_openrouter(
-                prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model="google/gemini-2.5-flash", max_tokens=16000, timeout_seconds=120.0,
-            )
-        except RuntimeError as e:
-            logger.warning(f"OpenRouter Gemini Flash failed for Phase A: {e}")
+    batch1_channels = await batch1_task
+    batch2_channels = await batch2_task
+    batch3_channels = await batch3_task
 
-    if text is None:
-        return {"error": "No LLM provider available"}
+    all_channels = batch1_channels + batch2_channels + batch3_channels
+    logger.info(f"[PHASE A] Got {len(all_channels)} channels total from batches")
 
-    analysis = _parse_json_response(text)
+    if len(all_channels) == 0:
+        return {"error": "All channel analysis batches failed", "channel_analysis": []}
 
-    # If parse failed, retry ONCE with a different model (JSON mode more likely to work)
-    if "error" in analysis and "raw_response" in analysis:
-        logger.warning("[PHASE A] JSON parse failed, retrying with VPS proxy...")
-        retry_text = None
-        if settings.has_vps_proxy:
-            try:
-                retry_text = await _call_vps_proxy(
-                    prompt, system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                    model="claude-sonnet-4", max_tokens=16000, timeout_seconds=300.0,
-                )
-            except Exception as e:
-                logger.warning(f"[PHASE A] VPS retry also failed: {e}")
-        if retry_text:
-            analysis = _parse_json_response(retry_text)
-        if "error" in analysis and "raw_response" in analysis:
-            logger.error("[PHASE A] Both parse attempts failed")
+    # Now generate profile + strategy using the channel scores
+    strategy = await run_profile_strategy(startup_data, all_channels)
 
-    # Ensure all channels have empty deep_dive placeholder
-    for ch in analysis.get("channel_analysis", []):
-        if "deep_dive" not in ch:
-            ch["deep_dive"] = {"research_type": "general", "actions": [], "research": []}
+    # Merge into final analysis dict
+    analysis = {
+        "company_profile": strategy.get("company_profile", {}),
+        "executive_summary": strategy.get("executive_summary", ""),
+        "channel_analysis": all_channels,
+        "bullseye_ranking": strategy.get("bullseye_ranking", {}),
+        "ninety_day_plan": strategy.get("ninety_day_plan", {}),
+        "budget_allocation": strategy.get("budget_allocation", {}),
+        "risk_matrix": strategy.get("risk_matrix", []),
+        "competitive_moat": strategy.get("competitive_moat", ""),
+    }
+
     return analysis
 
 

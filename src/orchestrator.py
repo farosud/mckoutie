@@ -647,13 +647,23 @@ async def run_deep_analysis(report_id: str):
             },
         }
 
-        # Only mark as complete if we actually got meaningful data
+        # Mark as complete even with partial data — leads/investors are still valuable
         channels = analysis.get("channel_analysis", [])
-        if len(channels) == 0:
-            logger.warning(f"[PHASE 2] Analysis completed but 0 channels — keeping as skeleton for retry")
+        has_deep_dives = sum(1 for c in channels if c.get("deep_dive") and c["deep_dive"].get("actions")) if channels else 0
+        has_any_data = len(channels) > 0 or len(final_leads) > 0 or len(final_all_investors) > 0
+
+        if not has_any_data:
+            logger.warning(f"[PHASE 2] Analysis completed with NO data at all — keeping as skeleton for retry")
             analysis["_phase"] = "skeleton"
             yield {"event": "error", "data": {"message": "Analysis returned empty results. Please refresh to retry."}}
             return
+
+        if len(channels) == 0:
+            logger.warning(f"[PHASE 2] Channel analysis failed but found {len(final_leads)} leads, {len(final_all_investors)} investors — saving partial report")
+
+        logger.info(f"[PHASE 2] Data quality: {len(channels)} channels, {has_deep_dives} deep dives, "
+                     f"{len(final_leads)} leads, {len(final_all_investors)} investors, {len(final_competitors)} competitors")
+
         analysis["_phase"] = "complete"
         # Remove raw startup data from stored analysis (no longer needed, saves space)
         analysis.pop("_startup_data", None)
