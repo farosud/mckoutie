@@ -1145,6 +1145,179 @@ def _mock_analysis() -> dict:
     }
 
 
+# ═══════════════════════════════════════════════
+# TESTSTREAM — Simulated streaming dashboard demo
+# ═══════════════════════════════════════════════
+
+# Track when each teststream session started (for time-based data release)
+_teststream_starts: dict[str, float] = {}
+
+@app.get("/teststream", response_class=HTMLResponse)
+async def test_stream_page(request: Request, tier: str = "free"):
+    """Streaming demo — shows how the dashboard fills in progressively.
+    Uses mock data released on a timer to simulate real LLM analysis."""
+    import time
+    session_id = f"teststream-{int(time.time()*1000)}"
+    _teststream_starts[session_id] = time.time()
+    # Render dashboard with skeleton data + streaming enabled
+    skeleton = {
+        "company_profile": {
+            "name": "Linear",
+            "one_liner": "AI-powered project management for modern product teams",
+            "stage": "scaling",
+            "estimated_size": "medium (6-20)",
+            "market": "Product development teams at tech companies",
+        },
+        "top_3_channels": [
+            {"channel": "Developer Communities", "score": 10},
+            {"channel": "Content Marketing", "score": 9},
+            {"channel": "Partnerships & Integrations", "score": 9},
+        ],
+        "hot_take": "Linear is the best PM tool nobody outside of tech has heard of. Fix that.",
+        "executive_summary": "",
+        "channel_analysis": [],
+        "bullseye_ranking": {},
+        "ninety_day_plan": {},
+        "budget_allocation": {},
+        "risk_matrix": [],
+        "competitive_moat": "",
+        "leads_research": {},
+        "investor_research": {},
+        "_phase": "skeleton",
+    }
+    html = render_dashboard_v5(
+        analysis=skeleton,
+        startup_name="Linear",
+        report_id=session_id,
+        tier=tier,
+        checkout_url="#pricing",
+        upgrade_url="#pricing",
+        logged_in=True,
+        login_url="#",
+        streaming=True,
+        sse_base_url="",
+    )
+    return HTMLResponse(content=html)
+
+
+@app.get("/report/{report_id}/progress")
+async def poll_deep_progress_handler(request: Request, report_id: str):
+    """Handles both real report progress AND teststream mock progress."""
+    import time as _time
+
+    # ---- TESTSTREAM MOCK MODE ----
+    if report_id.startswith("teststream-"):
+        start = _teststream_starts.get(report_id)
+        if not start:
+            start = _time.time()
+            _teststream_starts[report_id] = start
+        elapsed = _time.time() - start
+        mock = _mock_analysis()
+
+        all_channels = sorted(
+            mock.get("channel_analysis", []),
+            key=lambda c: c.get("score", 0), reverse=True
+        )
+        all_personas = mock.get("leads_research", {}).get("personas", [])
+        all_leads = mock.get("leads_research", {}).get("leads", [])
+        all_competitors = mock.get("investor_research", {}).get("competitors", [])
+        all_investors = (
+            mock.get("investor_research", {}).get("competitor_investors", [])
+            + mock.get("investor_research", {}).get("market_investors", [])
+        )
+
+        # Timeline:
+        #   0-1s:   "Connecting..."
+        #   1-20s:  channels drip in (1 per second)
+        #   20-22s: channels_meta (bullseye, summary, hot_take)
+        #   22-25s: personas (1 per second)
+        #   25-35s: leads drip in (1 per second)
+        #   35-40s: competitors drip in (1 per second)
+        #   40-50s: investors drip in (1 per second)
+        #   50-52s: strategy section
+        #   52s+:   complete
+
+        result: dict = {
+            "status": "starting",
+            "channels": [],
+            "personas": [],
+            "leads": [],
+            "competitors": [],
+            "investors": [],
+            "sections": {},
+        }
+
+        if elapsed < 1:
+            result["status"] = "Connecting to analysis engine..."
+            return JSONResponse(result)
+
+        # Channels: 1 per second starting at t=1
+        ch_count = min(len(all_channels), max(0, int(elapsed - 1)))
+        result["channels"] = all_channels[:ch_count]
+        if ch_count < len(all_channels):
+            result["status"] = f"Analyzing growth channels... ({ch_count}/{len(all_channels)})"
+        else:
+            result["status"] = "Channels complete. Searching for leads..."
+
+        # Channels meta at t=20
+        if elapsed >= 20:
+            result["sections"]["channels_meta"] = {
+                "bullseye_ranking": mock.get("bullseye_ranking", {}),
+                "executive_summary": mock.get("executive_summary", ""),
+                "hot_take": mock.get("hot_take", ""),
+                "company_profile": mock.get("company_profile", {}),
+            }
+
+        # Personas: 1 per second starting at t=22
+        if elapsed >= 22:
+            p_count = min(len(all_personas), max(0, int(elapsed - 22)))
+            result["personas"] = all_personas[:p_count]
+
+        # Leads: 1 per second starting at t=25
+        if elapsed >= 25:
+            l_count = min(len(all_leads), max(0, int(elapsed - 25)))
+            result["leads"] = all_leads[:l_count]
+            if l_count < len(all_leads):
+                result["status"] = f"Finding potential leads... ({l_count}/{len(all_leads)})"
+            else:
+                result["sections"]["leads_complete"] = {"count": len(all_leads)}
+
+        # Competitors: 1 per second starting at t=35
+        if elapsed >= 35:
+            c_count = min(len(all_competitors), max(0, int(elapsed - 35)))
+            result["competitors"] = all_competitors[:c_count]
+            if c_count > 0:
+                result["status"] = f"Analyzing competitors... ({c_count}/{len(all_competitors)})"
+
+        # Investors: 1 per second starting at t=40
+        if elapsed >= 40:
+            i_count = min(len(all_investors), max(0, int(elapsed - 40)))
+            result["investors"] = all_investors[:i_count]
+            if i_count < len(all_investors):
+                result["status"] = f"Discovering investors... ({i_count}/{len(all_investors)})"
+            else:
+                result["sections"]["investors_complete"] = {"count": len(all_investors)}
+
+        # Strategy at t=50
+        if elapsed >= 50:
+            result["sections"]["strategy"] = {
+                "ninety_day_plan": mock.get("ninety_day_plan", {}),
+                "budget_allocation": mock.get("budget_allocation", {}),
+                "risk_matrix": mock.get("risk_matrix", []),
+                "competitive_moat": mock.get("competitive_moat", ""),
+            }
+            result["status"] = "Finalizing strategy..."
+
+        # Complete at t=52
+        if elapsed >= 52:
+            result["status"] = "complete"
+
+        return JSONResponse(result)
+
+    # ---- REAL REPORT PROGRESS (original handler below) ----
+    return await _real_poll_deep_progress(request, report_id)
+
+
 @app.get("/testreport", response_class=HTMLResponse)
 async def test_report(request: Request, tier: str = "free", gate: str = ""):
     """Test report with mock data. ?tier=free|starter|growth  ?gate=login to preview login overlay"""
@@ -1529,9 +1702,8 @@ async def stream_deep_analysis(request: Request, report_id: str):
     return EventSourceResponse(progress_stream())
 
 
-@app.get("/report/{report_id}/progress")
-async def poll_deep_progress(request: Request, report_id: str):
-    """Poll endpoint for deep analysis progress.
+async def _real_poll_deep_progress(request: Request, report_id: str):
+    """Real poll endpoint for deep analysis progress.
 
     Returns current progress including completed sections.
     Client polls every 3 seconds until status is 'complete' or 'error'.
