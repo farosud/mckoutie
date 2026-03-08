@@ -893,6 +893,12 @@ async def run_deep_analysis_background(report_id: str):
                 _deep_progress[report_id]["sections"][section] = payload
                 _deep_progress[report_id]["status"] = f"{section}_complete"
                 _persist_progress(report_id)
+            elif ev_type == "channel_update":
+                idx = ev_data.get("index")
+                deep_dive = ev_data.get("deep_dive", {})
+                if isinstance(idx, int) and 0 <= idx < len(_deep_progress[report_id]["channels"]):
+                    _deep_progress[report_id]["channels"][idx]["deep_dive"] = deep_dive
+                    _persist_progress(report_id)
             elif ev_type == "done":
                 _deep_progress[report_id]["status"] = "complete"
                 _persist_progress(report_id)

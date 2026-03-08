@@ -1639,6 +1639,45 @@ def _streaming_js():
     updateKPIs();
   }
 
+  function renderDeepDiveHtml(ch){
+    var deep = ch.deep_dive || {};
+    var actions = deep.actions || [];
+    var research = deep.research || [];
+    if(!actions.length && !research.length){
+      return '<div class="ch-expand-inner" style="color:var(--text3);font-size:12px">Detailed analysis available in future updates.</div>';
+    }
+    var actionsHtml = '';
+    actions.slice(0,3).forEach(function(a, i){
+      actionsHtml += '<div class="action-card">'+
+        '<div class="action-title">Action '+(i+1)+': '+escHtml(a.title||'')+'</div>'+
+        '<div class="action-desc">'+escHtml((a.description||'').slice(0,220))+'</div>'+
+        '<div class="action-result">'+escHtml((a.expected_result||'').slice(0,140))+'</div>'+
+      '</div>';
+    });
+    var researchHtml = '';
+    if(research.length){
+      researchHtml = '<div style="margin-top:10px;font-size:11px;color:var(--text2)">'+
+        'Research: '+research.slice(0,4).map(function(r){
+          if(typeof r === 'string') return escHtml(r.slice(0,80));
+          return escHtml((r.name || r.keyword || r.title || 'item').slice(0,80));
+        }).join(' · ')+'</div>';
+    }
+    return '<div class="ch-expand-inner"><div class="action-grid">'+actionsHtml+'</div>'+researchHtml+'</div>';
+  }
+
+  function maybeUpdateChannelAccordion(idx, ch){
+    var deep = (ch && ch.deep_dive) || {};
+    var hasDeep = Array.isArray(deep.actions) && deep.actions.length > 0;
+    if(!hasDeep) return;
+    var expandRow = document.getElementById('ch-'+idx);
+    if(!expandRow) return;
+    if(expandRow.getAttribute('data-deep-ready') === '1') return;
+    var cell = expandRow.querySelector('td');
+    if(!cell) return;
+    cell.innerHTML = renderDeepDiveHtml(ch);
+    expandRow.setAttribute('data-deep-ready', '1');
+  }
+
   function updateKPIs(){
     var sorted = channels.slice().sort(function(a,b){return(b.score||0)-(a.score||0)});
     var topScore = sorted.length?sorted[0].score:0;
@@ -1938,6 +1977,15 @@ def _streaming_js():
       pollChannelCount++;
       setPip('channels','active');
     }
+
+    // Update already-rendered channels when deep_dive data arrives later.
+    for(var ci=0; ci<Math.min(channels.length, pChannels.length); ci++){
+      if(pChannels[ci]){
+        channels[ci] = pChannels[ci];
+        maybeUpdateChannelAccordion(ci, pChannels[ci]);
+      }
+    }
+
     if(pollChannelCount >= 19) setPip('channels','done');
 
     // Progressively add personas
