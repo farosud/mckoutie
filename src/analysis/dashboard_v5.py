@@ -745,7 +745,7 @@ def _section_channels(channels, tier):
             move_html = '<span style="color:var(--text3);font-size:10px">Starter plan</span>'
 
         rows += f"""
-<tr class="ch-row" data-target="{ch_id}" onclick="toggleChannel('{ch_id}')">
+<tr class="ch-row open" data-target="{ch_id}" onclick="toggleChannel('{ch_id}')">
   <td class="cell-rank">{i+1}</td>
   <td class="cell-name">{_e(ch.get("channel",""))}</td>
   <td>
@@ -765,7 +765,7 @@ def _section_channels(channels, tier):
         deep = ch.get("deep_dive", {})
         expand_content = _render_channel_accordion(ch, deep, tier)
         rows += f"""
-<tr class="ch-expand" id="{ch_id}">
+<tr class="ch-expand open" id="{ch_id}">
   <td colspan="8">{expand_content}</td>
 </tr>"""
 
@@ -1589,7 +1589,7 @@ def _streaming_js():
       : '<span style="color:var(--text3);font-size:10px">Starter plan</span>';
 
     var row = document.createElement('tr');
-    row.className = 'ch-row';
+    row.className = 'ch-row open';
     row.setAttribute('data-target', chId);
     row.setAttribute('onclick', "toggleChannel('"+chId+"')");
     row.style.opacity = '0';
@@ -1621,7 +1621,7 @@ def _streaming_js():
       expandInner += '</div>';
     }
     var expandRow = document.createElement('tr');
-    expandRow.className = 'ch-expand';
+    expandRow.className = 'ch-expand open';
     expandRow.id = chId;
     expandRow.innerHTML = '<td colspan="8">'+expandInner+'</td>';
     tableBody.appendChild(expandRow);
