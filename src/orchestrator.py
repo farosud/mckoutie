@@ -848,7 +848,21 @@ async def run_deep_analysis_background(report_id: str):
             elif ev_type == "channel":
                 ch = ev_data.get("channel", {})
                 if ch:
-                    _deep_progress[report_id]["channels"].append(ch)
+                    # Merge with seeded preview channels instead of duplicating.
+                    # Seeded entries are marked with "_preliminary": True.
+                    ch_name = (ch.get("channel", "") or "").strip().lower()
+                    existing_idx = -1
+                    if ch_name:
+                        for idx, existing in enumerate(_deep_progress[report_id]["channels"]):
+                            existing_name = (existing.get("channel", "") or "").strip().lower()
+                            if existing_name == ch_name:
+                                existing_idx = idx
+                                break
+
+                    if existing_idx >= 0:
+                        _deep_progress[report_id]["channels"][existing_idx] = ch
+                    else:
+                        _deep_progress[report_id]["channels"].append(ch)
                 _deep_progress[report_id]["status"] = f"Analyzing channels ({len(_deep_progress[report_id]['channels'])}/19)"
                 # Persist after every few channels so dashboard fills even if we crash
                 if len(_deep_progress[report_id]["channels"]) % 5 == 0 or len(_deep_progress[report_id]["channels"]) >= 19:

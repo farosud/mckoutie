@@ -1921,6 +1921,7 @@ def _streaming_js():
       })
       .catch(function(err){
         console.log('[mckoutie] Poll error:', err);
+        setStatus('Connection interrupted. Reconnecting to analysis stream...');
         setTimeout(doPoll, 5000);
       });
   }
