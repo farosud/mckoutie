@@ -56,6 +56,29 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else ""
+
+
+def _check_hermes_access(request: Request) -> tuple[bool, str]:
+    key = request.headers.get("x-hermes-key", "")
+    if not settings.hermes_api_key:
+        return False, "Hermes API key not configured"
+    if key != settings.hermes_api_key:
+        return False, "Invalid Hermes API key"
+
+    allowed_ips = settings.hermes_allowed_ip_set
+    if allowed_ips:
+        ip = _client_ip(request)
+        if ip not in allowed_ips:
+            return False, f"IP not allowed: {ip}"
+
+    return True, ""
+
+
 @app.get("/", response_class=HTMLResponse)
 async def landing():
     return """<!DOCTYPE html>
@@ -2129,6 +2152,104 @@ async def analyze_post(request: Request):
 @app.get("/analyze", response_class=HTMLResponse)
 async def analyze_get(request: Request):
     return await _handle_analyze(request)
+
+
+@app.post("/api/hermes/analyze")
+async def hermes_analyze(request: Request):
+    """Server-to-server report creation for Hermes/Telegram bot."""
+    ok, reason = _check_hermes_access(request)
+    if not ok:
+        return JSONResponse({"error": reason}, status_code=403)
+
+    try:
+        from src.analysis.report_generator import generate_report_id, save_report
+        from src.modules.report_store import ReportRecord, save_record
+        import re as _re
+
+        body = await request.json()
+        raw_url = str(body.get("url", "")).strip()
+        if not raw_url:
+            return JSONResponse({"error": "Missing url"}, status_code=400)
+
+        if not raw_url.startswith(("http://", "https://")):
+            raw_url = "https://" + raw_url
+        if not _re.match(r"https?://[a-zA-Z0-9]", raw_url):
+            return JSONResponse({"error": "Invalid url"}, status_code=400)
+
+        report_id = generate_report_id(raw_url)
+        existing = report_store.load_record(report_id)
+        if existing:
+            if not is_deep_analysis_running(report_id):
+                asyncio.create_task(run_deep_analysis_background(report_id))
+            return JSONResponse({
+                "report_id": report_id,
+                "status": "existing",
+                "report_url": f"/report/{report_id}",
+                "progress_url": f"/report/{report_id}/progress",
+            })
+
+        record = ReportRecord(
+            report_id=report_id,
+            startup_name=raw_url,
+            target=raw_url,
+            tweet_id="",
+            author_username="hermes",
+            author_id="hermes",
+            status="skeleton",
+        )
+        save_record(record)
+
+        try:
+            db.create_report(
+                report_id=report_id,
+                startup_name=raw_url,
+                target=raw_url,
+                tweet_id="",
+                author_twitter_id="hermes",
+                author_username="hermes",
+            )
+        except Exception as e:
+            logger.warning(f"Hermes Supabase report create failed (non-fatal): {e}")
+
+        skeleton_data = {
+            "company_profile": {"name": raw_url},
+            "top_3_channels": [],
+            "hot_take": "",
+            "channel_analysis": [],
+            "bullseye_ranking": {},
+            "ninety_day_plan": {},
+            "budget_allocation": {},
+            "risk_matrix": [],
+            "competitive_moat": "",
+            "executive_summary": "",
+            "leads_research": {},
+            "investor_research": {},
+            "_startup_data": f"## WEBSITE DATA\nURL: {raw_url}",
+            "_phase": "skeleton",
+        }
+        save_report(report_id, skeleton_data, "")
+
+        # Start deep analysis immediately for bot-driven flow.
+        asyncio.create_task(run_deep_analysis_background(report_id))
+
+        return JSONResponse({
+            "report_id": report_id,
+            "status": "started",
+            "report_url": f"/report/{report_id}",
+            "progress_url": f"/report/{report_id}/progress",
+        })
+    except Exception as e:
+        logger.error(f"Hermes analyze failed: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/hermes/report/{report_id}")
+async def hermes_report_progress(request: Request, report_id: str):
+    """Auth-gated progress endpoint for Hermes bot."""
+    ok, reason = _check_hermes_access(request)
+    if not ok:
+        return JSONResponse({"error": reason}, status_code=403)
+    return await _real_poll_deep_progress(request, report_id)
 
 
 @app.get("/health")

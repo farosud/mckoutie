@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     advisor_url: str = "http://165.227.18.32:3458"
     advisor_api_key: str = "mckoutie-advisor-2026"
 
+    # Hermes bot (server-to-server access for Telegram agent)
+    hermes_api_key: str = ""
+    hermes_allowed_ips: str = "165.227.18.32"
+
     # Stripe price IDs (created on first checkout if empty)
     stripe_starter_price_id: str = ""
     stripe_growth_price_id: str = ""
@@ -110,6 +114,14 @@ class Settings(BaseSettings):
     @property
     def has_scraping(self) -> bool:
         return bool(self.exa_api_key or self.firecrawl_api_key)
+
+    @property
+    def hermes_allowed_ip_set(self) -> set[str]:
+        return {
+            ip.strip()
+            for ip in (self.hermes_allowed_ips or "").split(",")
+            if ip.strip()
+        }
 
 
 settings = Settings()
