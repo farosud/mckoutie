@@ -1009,6 +1009,40 @@ Score honestly — some channels should be 1-2. Be brutally specific to THIS sta
 Do NOT include deep_dive or hot_take.
 """
 
+BATCH_CHANNEL_BRAINSTORM_PROMPT = """Analyze this startup for SPECIFIC traction channels.
+
+## STARTUP DATA
+
+{startup_data}
+
+## YOUR TASK
+
+Brainstorm ONLY these channels for this startup:
+{channel_list}
+
+IMPORTANT:
+- Do NOT score channels yet.
+- Do NOT rank channels yet.
+- Focus on concrete tactical options and test ideas per channel.
+
+Return valid JSON with this structure:
+
+{{
+  "channel_analysis": [
+    {{
+      "channel": "string — channel name (MUST match exactly from the list above)",
+      "effort": "string — low | medium | high",
+      "timeline": "string — days | weeks | months to see results",
+      "budget": "string — estimated budget to test ($0, $50, $500, $5K, etc.)",
+      "specific_ideas": ["3-5 SPECIFIC tactical ideas for THIS startup"],
+      "first_move": "string — the very first concrete action to take",
+      "why_or_why_not": "string — practical assessment of when/why this channel can work",
+      "killer_insight": "string — one non-obvious insight about using this channel"
+    }}
+  ]
+}}
+"""
+
 PROFILE_STRATEGY_PROMPT = """Analyze this startup and produce the strategic overview.
 
 ## STARTUP DATA
@@ -1130,6 +1164,74 @@ async def run_channel_batch(startup_data: str, channel_names: list[str]) -> list
             ch["deep_dive"] = {"research_type": "general", "actions": [], "research": []}
 
     return channels
+
+
+async def run_channel_brainstorm_batch(startup_data: str, channel_names: list[str]) -> list[dict]:
+    """Brainstorm a batch of channels without scoring. Returns list of channel dicts."""
+    channel_list = "\n".join(f"- {name}" for name in channel_names)
+    prompt = BATCH_CHANNEL_BRAINSTORM_PROMPT.format(startup_data=startup_data, channel_list=channel_list)
+
+    logger.info(f"[BRAINSTORM] Analyzing {len(channel_names)} channels: {', '.join(channel_names[:3])}...")
+
+    text = await _call_llm_with_fallbacks(prompt, ANALYSIS_SYSTEM_PROMPT, max_tokens=6000, timeout=180.0)
+
+    if text is None:
+        logger.error(f"[BRAINSTORM] All providers failed for channels: {channel_names}")
+        return []
+
+    result = _parse_json_response(text)
+    channels = result.get("channel_analysis", [])
+    logger.info(f"[BRAINSTORM] Got {len(channels)} channels back")
+
+    for ch in channels:
+        # Brainstorm phase intentionally avoids scoring; use None until final synthesis.
+        ch["score"] = None
+        if "deep_dive" not in ch:
+            ch["deep_dive"] = {"research_type": "general", "actions": [], "research": []}
+
+    return channels
+
+
+async def run_brainstorm_analysis(startup_data: str, on_batch_complete=None) -> list[dict]:
+    """Phase A1: Brainstorm all 19 channels without scoring. Streams batches via callback."""
+    batch1_names = CHANNELS[:7]
+    batch2_names = CHANNELS[7:13]
+    batch3_names = CHANNELS[13:]
+
+    logger.info(
+        f"[BRAINSTORM] Running batched brainstorm: {len(batch1_names)} + {len(batch2_names)} + {len(batch3_names)} channels"
+    )
+
+    async def _run_named_batch(batch_names: list[str]):
+        return batch_names, await run_channel_brainstorm_batch(startup_data, batch_names)
+
+    tasks = [
+        asyncio.create_task(_run_named_batch(batch1_names)),
+        asyncio.create_task(_run_named_batch(batch2_names)),
+        asyncio.create_task(_run_named_batch(batch3_names)),
+    ]
+
+    all_channels = []
+    for task in asyncio.as_completed(tasks):
+        try:
+            batch_names, batch_channels = await task
+        except Exception as e:
+            logger.warning(f"[BRAINSTORM] Channel batch failed: {e}")
+            batch_names = []
+            batch_channels = []
+
+        all_channels.extend(batch_channels)
+
+        if on_batch_complete:
+            try:
+                maybe_coro = on_batch_complete(batch_channels, batch_names)
+                if asyncio.iscoroutine(maybe_coro):
+                    await maybe_coro
+            except Exception as e:
+                logger.warning(f"[BRAINSTORM] on_batch_complete callback failed: {e}")
+
+    logger.info(f"[BRAINSTORM] Got {len(all_channels)} brainstormed channels total")
+    return all_channels
 
 
 async def run_profile_strategy(startup_data: str, all_channels: list[dict]) -> dict:

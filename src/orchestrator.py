@@ -39,7 +39,13 @@ from src.modules.report_store import ReportRecord, save_record, update_status, l
 from src.modules.image_generator import generate_capybara_image
 from src.modules.lead_finder import find_leads
 from src.modules.investor_finder import find_investors
-from src.analysis.traction_engine import run_quick_analysis, run_traction_analysis, run_core_analysis, run_deep_dives_batch
+from src.analysis.traction_engine import (
+    run_quick_analysis,
+    run_traction_analysis,
+    run_core_analysis,
+    run_deep_dives_batch,
+    run_brainstorm_analysis,
+)
 from src.analysis.report_generator import (
     generate_report_id,
     generate_teaser_from_quick,
@@ -451,46 +457,47 @@ async def run_deep_analysis(report_id: str):
         yield {"event": "thinking", "data": {"message": "Initializing deep analysis engine...", "detail": f"Preparing to analyze {startup_name}"}}
 
         # ==========================================================
-        # PHASE A: Core 19-channel analysis (scores, no deep_dive)
+        # PHASE A1: Brainstorm channels first (no scoring yet)
         # ==========================================================
-        yield {"event": "thinking", "data": {"message": "Scoring 19 growth channels...", "detail": "Phase 1: evaluating channel fit for your startup"}}
+        yield {"event": "thinking", "data": {"message": "Brainstorming channel ideas...", "detail": "Phase 1: tactical options by channel (no ranking yet)"}}
 
         # Shared event queue (heartbeat + progressive channel batches)
         _event_queue: asyncio.Queue = asyncio.Queue()
         _hb_done = asyncio.Event()
         emitted_channel_keys = set()
         emitted_channel_count = 0
+        channel_reasoning_log: list[dict] = []
 
         async def _heartbeat():
             msgs = [
-                "Evaluating Viral Marketing...", "Scoring PR angles...",
-                "Researching SEM keywords...", "Analyzing SEO potential...",
-                "Assessing content fit...", "Mapping partnerships...",
-                "Scoring community building...", "Calculating budgets...",
+                "Brainstorming Viral Marketing tests...", "Exploring PR angles...",
+                "Mapping SEM experiments...", "Drafting SEO opportunities...",
+                "Assessing content plays...", "Sketching partnership options...",
+                "Exploring community tactics...", "Generating first-move experiments...",
             ]
             idx = 0
             while not _hb_done.is_set():
                 await asyncio.sleep(5)
                 if _hb_done.is_set():
                     break
-                msg = msgs[idx % len(msgs)] if idx < len(msgs) else f"Scoring channels ({idx * 5}s)..."
+                msg = msgs[idx % len(msgs)] if idx < len(msgs) else f"Brainstorming channels ({idx * 5}s)..."
                 await _event_queue.put({"event": "thinking", "data": {"message": msg, "detail": ""}})
                 idx += 1
 
-        async def _on_core_batch(batch_channels, batch_names):
-            """Emit channel rows as each LLM batch finishes."""
+        async def _on_brainstorm_batch(batch_channels, batch_names):
+            """Emit brainstorm channel rows as each LLM batch finishes."""
             nonlocal emitted_channel_count
             if not batch_channels:
                 return
             await _event_queue.put({
                 "event": "thinking",
                 "data": {
-                    "message": f"Batch complete: {len(batch_channels)} channels scored",
+                    "message": f"Batch complete: {len(batch_channels)} channel brainstorms",
                     "detail": ", ".join(batch_names[:3]),
                 },
             })
 
-            for ch in sorted(batch_channels, key=lambda c: c.get("score", 0), reverse=True):
+            for ch in batch_channels:
                 key = (ch.get("channel", "") or "").strip().lower()
                 if key and key in emitted_channel_keys:
                     continue
@@ -500,12 +507,22 @@ async def run_deep_analysis(report_id: str):
                     "event": "channel",
                     "data": {"index": emitted_channel_count, "channel": ch},
                 })
+                reasoning = {
+                    "channel": ch.get("channel", ""),
+                    "status": "Brainstorming tactical options",
+                    "evidence": [x for x in [ch.get("why_or_why_not", ""), ch.get("killer_insight", "")] if x][:2],
+                    "hypothesis": ch.get("why_or_why_not", "")[:180] or "Channel can work if executed against the right segment.",
+                    "decision": ch.get("first_move", "") or "Run a small test and validate signal quality.",
+                    "confidence": "high" if len(ch.get("specific_ideas", []) or []) >= 3 else "medium",
+                }
+                channel_reasoning_log.append(reasoning)
+                await _event_queue.put({"event": "channel_reasoning", "data": reasoning})
                 emitted_channel_count += 1
 
         hb_task = asyncio.create_task(_heartbeat())
-        core_task = asyncio.create_task(run_core_analysis(startup_data, on_batch_complete=_on_core_batch))
+        brainstorm_task = asyncio.create_task(run_brainstorm_analysis(startup_data, on_batch_complete=_on_brainstorm_batch))
 
-        while not core_task.done():
+        while not brainstorm_task.done():
             try:
                 event = await asyncio.wait_for(_event_queue.get(), timeout=1.0)
                 yield event
@@ -517,28 +534,79 @@ async def run_deep_analysis(report_id: str):
         while not _event_queue.empty():
             yield await _event_queue.get()
 
-        analysis = core_task.result()
+        brainstorm_channels = brainstorm_task.result()
+        if not brainstorm_channels:
+            yield {"event": "error", "data": {"message": "Could not generate channel brainstorm ideas."}}
+            return
 
-        if "error" in analysis and "raw_response" in analysis:
+        # ==========================================================
+        # PHASE A2: Final scoring + implementation plan synthesis
+        # ==========================================================
+        yield {
+            "event": "thinking",
+            "data": {
+                "message": "Finalizing channel scores and implementation plan...",
+                "detail": "Phase 2: ranking all channels and building your execution plan",
+            },
+        }
+
+        analysis = await run_core_analysis(startup_data)
+
+        if "error" in analysis:
             yield {"event": "error", "data": {"message": f"Analysis failed: {analysis.get('error')}"}}
             return
 
         if not analysis.get("company_profile"):
             analysis["company_profile"] = skeleton.get("company_profile", {})
 
-        # Emit any channels not already emitted by progressive batches
+        # Merge final scoring results into already-streamed brainstorm channels.
         channels = analysis.get("channel_analysis", [])
         sorted_channels = sorted(channels, key=lambda c: c.get("score", 0), reverse=True)
+        brainstorm_index = {}
+        for idx, ch in enumerate(_deep_progress.get(report_id, {}).get("channels", [])):
+            ch_name = (ch.get("channel", "") or "").strip().lower()
+            if ch_name:
+                brainstorm_index[ch_name] = idx
+
         for ch in sorted_channels:
             key = (ch.get("channel", "") or "").strip().lower()
-            if key and key in emitted_channel_keys:
-                continue
-            if key:
-                emitted_channel_keys.add(key)
-            yield {"event": "thinking", "data": {"message": f"Channel {emitted_channel_count+1}/{len(sorted_channels)}: {ch.get('channel', '')} — {ch.get('score', 0)}/10", "detail": ch.get('killer_insight', '')[:80]}}
-            yield {"event": "channel", "data": {"index": emitted_channel_count, "channel": ch}}
-            emitted_channel_count += 1
-            await asyncio.sleep(0.05)
+            idx = brainstorm_index.get(key)
+            yield {
+                "event": "thinking",
+                "data": {
+                    "message": f"Scored: {ch.get('channel', '')} — {ch.get('score', 0)}/10",
+                    "detail": ch.get("first_move", "")[:100],
+                },
+            }
+            yield {"event": "channel_update", "data": {"index": idx, "channel": ch}}
+            await asyncio.sleep(0.03)
+
+        # Emit final transparent reasoning block (top recommendations + next steps)
+        def _build_reasoning_item(channel_name: str) -> dict:
+            for c in sorted_channels:
+                if (c.get("channel", "") or "").strip().lower() == (channel_name or "").strip().lower():
+                    score = c.get("score", 0)
+                    return {
+                        "channel": c.get("channel", channel_name),
+                        "score": score,
+                        "why_now": c.get("why_or_why_not", "")[:220],
+                        "key_risk": c.get("killer_insight", "")[:180],
+                        "confidence": "high" if score >= 8 else ("medium" if score >= 6 else "low"),
+                    }
+            return {"channel": channel_name, "score": 0, "why_now": "", "key_risk": "", "confidence": "low"}
+
+        inner_ring = analysis.get("bullseye_ranking", {}).get("inner_ring", {}).get("channels", [])
+        promising = analysis.get("bullseye_ranking", {}).get("promising", {}).get("channels", [])
+        final_reasoning = {
+            "top_3": [_build_reasoning_item(name) for name in inner_ring[:3]],
+            "next_3": [_build_reasoning_item(name) for name in promising[:3]],
+            "implementation_plan": {
+                "days_0_30": analysis.get("ninety_day_plan", {}).get("month_1", {}).get("actions", []),
+                "days_31_60": analysis.get("ninety_day_plan", {}).get("month_2", {}).get("actions", []),
+                "days_61_90": analysis.get("ninety_day_plan", {}).get("month_3", {}).get("actions", []),
+            },
+        }
+        yield {"event": "final_reasoning", "data": final_reasoning}
 
         # Stream channels metadata
         yield {"event": "section", "data": {
@@ -551,7 +619,7 @@ async def run_deep_analysis(report_id: str):
             },
         }}
 
-        yield {"event": "thinking", "data": {"message": "Channel scores complete. Generating detailed research...", "detail": "Deep-diving top channels + searching for leads and investors"}}
+        yield {"event": "thinking", "data": {"message": "Scoring complete. Generating detailed research...", "detail": "Deep-diving top channels + searching for leads and investors"}}
 
         # ==========================================================
         # PHASE B: Deep dives + Leads + Investors (all in parallel)
@@ -574,7 +642,14 @@ async def run_deep_analysis(report_id: str):
                     for idx, ch in enumerate(sorted_channels):
                         if ch.get("channel", "").lower() == ch_name.lower():
                             ch["deep_dive"] = dive_data
-                            await _event_queue.put({"event": "channel_update", "data": {"index": idx, "deep_dive": dive_data}})
+                            await _event_queue.put({
+                                "event": "channel_update",
+                                "data": {
+                                    "index": idx,
+                                    "channel": {"channel": ch.get("channel", "")},
+                                    "deep_dive": dive_data,
+                                },
+                            })
                             await _event_queue.put({"event": "thinking", "data": {"message": f"Deep dive ready: {ch_name}", "detail": f"{len(dive_data.get('actions', []))} actions, {len(dive_data.get('research', []))} research items"}})
                             break
                 if not dives:
@@ -692,6 +767,8 @@ async def run_deep_analysis(report_id: str):
         # --- Merge everything and save ---
         analysis["leads_research"] = leads_data
         analysis["investor_research"] = investors_data
+        analysis["channel_reasoning"] = channel_reasoning_log
+        analysis["final_reasoning"] = final_reasoning
 
         # Stream strategy sections
         yield {
@@ -829,9 +906,11 @@ async def run_deep_analysis_background(report_id: str):
         }
 
     _deep_progress[report_id] = {
-        "status": "Scoring 19 growth channels..." if not seed_channels else f"Analyzing all 19 channels (showing top {len(seed_channels)} preview)...",
+        "status": "Brainstorming 19 growth channels..." if not seed_channels else f"Analyzing all 19 channels (showing top {len(seed_channels)} preview)...",
         "sections": initial_sections,
         "channels": seed_channels,
+        "channel_reasoning": [],
+        "final_reasoning": {},
         "leads": [],
         "investors": [],
         "competitors": [],
@@ -863,7 +942,7 @@ async def run_deep_analysis_background(report_id: str):
                         _deep_progress[report_id]["channels"][existing_idx] = ch
                     else:
                         _deep_progress[report_id]["channels"].append(ch)
-                _deep_progress[report_id]["status"] = f"Analyzing channels ({len(_deep_progress[report_id]['channels'])}/19)"
+                _deep_progress[report_id]["status"] = f"Brainstorming channels ({len(_deep_progress[report_id]['channels'])}/19)"
                 # Persist after every few channels so dashboard fills even if we crash
                 if len(_deep_progress[report_id]["channels"]) % 5 == 0 or len(_deep_progress[report_id]["channels"]) >= 19:
                     _persist_progress(report_id)
@@ -895,10 +974,44 @@ async def run_deep_analysis_background(report_id: str):
                 _persist_progress(report_id)
             elif ev_type == "channel_update":
                 idx = ev_data.get("index")
+                ch_update = ev_data.get("channel")
                 deep_dive = ev_data.get("deep_dive", {})
-                if isinstance(idx, int) and 0 <= idx < len(_deep_progress[report_id]["channels"]):
-                    _deep_progress[report_id]["channels"][idx]["deep_dive"] = deep_dive
+                target_idx = None
+                if isinstance(ch_update, dict) and ch_update:
+                    # Prefer name-based matching; channel order can differ across phases.
+                    ch_name = (ch_update.get("channel", "") or "").strip().lower()
+                    if ch_name:
+                        for i, existing in enumerate(_deep_progress[report_id]["channels"]):
+                            existing_name = (existing.get("channel", "") or "").strip().lower()
+                            if existing_name == ch_name:
+                                target_idx = i
+                                break
+                if target_idx is None and isinstance(idx, int) and 0 <= idx < len(_deep_progress[report_id]["channels"]):
+                    target_idx = idx
+
+                if target_idx is not None:
+                    if isinstance(ch_update, dict) and ch_update:
+                        _deep_progress[report_id]["channels"][target_idx].update(ch_update)
+                    if deep_dive:
+                        _deep_progress[report_id]["channels"][target_idx]["deep_dive"] = deep_dive
                     _persist_progress(report_id)
+            elif ev_type == "channel_reasoning":
+                reasoning = ev_data if isinstance(ev_data, dict) else {}
+                ch_name = (reasoning.get("channel", "") or "").strip().lower()
+                if ch_name:
+                    updated = False
+                    for i, existing in enumerate(_deep_progress[report_id]["channel_reasoning"]):
+                        existing_name = (existing.get("channel", "") or "").strip().lower()
+                        if existing_name == ch_name:
+                            _deep_progress[report_id]["channel_reasoning"][i] = reasoning
+                            updated = True
+                            break
+                    if not updated:
+                        _deep_progress[report_id]["channel_reasoning"].append(reasoning)
+                    _persist_progress(report_id)
+            elif ev_type == "final_reasoning":
+                _deep_progress[report_id]["final_reasoning"] = ev_data if isinstance(ev_data, dict) else {}
+                _persist_progress(report_id)
             elif ev_type == "done":
                 _deep_progress[report_id]["status"] = "complete"
                 _persist_progress(report_id)

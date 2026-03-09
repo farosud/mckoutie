@@ -79,6 +79,125 @@ def _check_hermes_access(request: Request) -> tuple[bool, str]:
     return True, ""
 
 
+def _chunk_telegram_messages(blocks: list[str], max_chars: int = 1200) -> list[str]:
+    """Pack text blocks into thread-friendly message chunks."""
+    max_chars = max(300, min(int(max_chars or 1200), 3900))
+    chunks: list[str] = []
+    current = ""
+    for block in blocks:
+        b = (block or "").strip()
+        if not b:
+            continue
+        if len(b) > max_chars:
+            # Hard-split oversized blocks.
+            start = 0
+            while start < len(b):
+                part = b[start:start + max_chars]
+                if current:
+                    chunks.append(current.strip())
+                    current = ""
+                chunks.append(part.strip())
+                start += max_chars
+            continue
+        sep = "\n\n" if current else ""
+        if len(current) + len(sep) + len(b) <= max_chars:
+            current = f"{current}{sep}{b}" if current else b
+        else:
+            if current:
+                chunks.append(current.strip())
+            current = b
+    if current:
+        chunks.append(current.strip())
+    return chunks
+
+
+def _format_reasoning_for_telegram(report_id: str, progress: dict, max_chars: int = 1200) -> dict:
+    """Build Telegram-thread friendly messages from live progress/reasoning fields."""
+    status = progress.get("status", "") or "working"
+    channel_reasoning = progress.get("channel_reasoning", []) or []
+    final_reasoning = progress.get("final_reasoning", {}) or {}
+    channels = progress.get("channels", []) or []
+
+    blocks: list[str] = []
+    intro = (
+        f"Mckoutie report `{report_id}`\n"
+        f"Status: {status}\n"
+        "Mode: transparent reasoning (concise)."
+    )
+    blocks.append(intro)
+
+    if channel_reasoning:
+        blocks.append("Channel reasoning (live):")
+        for r in channel_reasoning:
+            channel = r.get("channel", "Unknown channel")
+            evidence = r.get("evidence", []) or []
+            evidence_line = "; ".join(str(x) for x in evidence[:2]) if evidence else "No evidence captured yet."
+            block = (
+                f"- {channel}\n"
+                f"  Status: {r.get('status', '')}\n"
+                f"  Evidence: {evidence_line}\n"
+                f"  Hypothesis: {r.get('hypothesis', '')}\n"
+                f"  Decision: {r.get('decision', '')}\n"
+                f"  Confidence: {r.get('confidence', 'medium')}"
+            )
+            blocks.append(block)
+    elif channels:
+        # Fallback while channel_reasoning is still being built.
+        blocks.append("Channel brainstorm snapshots:")
+        for ch in channels[:8]:
+            blocks.append(
+                f"- {ch.get('channel', 'Channel')}\n"
+                f"  First move: {ch.get('first_move', '')}\n"
+                f"  Insight: {ch.get('killer_insight', '')[:180]}"
+            )
+    else:
+        blocks.append("No channel reasoning yet. Analysis is still initializing.")
+
+    if final_reasoning:
+        top_3 = final_reasoning.get("top_3", []) or []
+        next_3 = final_reasoning.get("next_3", []) or []
+        plan = final_reasoning.get("implementation_plan", {}) or {}
+
+        if top_3:
+            lines = ["Final recommendation — top 3 now:"]
+            for i, item in enumerate(top_3, 1):
+                lines.append(
+                    f"{i}. {item.get('channel', 'Channel')} ({item.get('score', 0)}/10)\n"
+                    f"   Why now: {item.get('why_now', '')[:180]}\n"
+                    f"   Risk: {item.get('key_risk', '')[:140]}\n"
+                    f"   Confidence: {item.get('confidence', 'medium')}"
+                )
+            blocks.append("\n".join(lines))
+
+        if next_3:
+            lines = ["Next channels to test:"]
+            for i, item in enumerate(next_3, 1):
+                lines.append(
+                    f"{i}. {item.get('channel', 'Channel')} ({item.get('score', 0)}/10) — "
+                    f"{item.get('why_now', '')[:140]}"
+                )
+            blocks.append("\n".join(lines))
+
+        p0 = plan.get("days_0_30", []) or []
+        p1 = plan.get("days_31_60", []) or []
+        p2 = plan.get("days_61_90", []) or []
+        blocks.append(
+            "Implementation plan:\n"
+            f"0-30 days: {', '.join(str(x) for x in p0[:4])}\n"
+            f"31-60 days: {', '.join(str(x) for x in p1[:4])}\n"
+            f"61-90 days: {', '.join(str(x) for x in p2[:4])}"
+        )
+
+    messages = _chunk_telegram_messages(blocks, max_chars=max_chars)
+    return {
+        "report_id": report_id,
+        "status": status,
+        "ready": status == "complete" or bool(final_reasoning),
+        "message_count": len(messages),
+        "messages": messages,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def landing():
     return """<!DOCTYPE html>
@@ -1617,6 +1736,8 @@ async def stream_deep_analysis(request: Request, report_id: str):
     # Stream progress from _deep_progress dict (populated by background task)
     async def progress_stream():
         emitted_channels = 0
+        emitted_channel_reasoning = 0
+        emitted_final_reasoning = False
         emitted_personas = 0
         emitted_leads = 0
         emitted_competitors = 0
@@ -1662,6 +1783,20 @@ async def stream_deep_analysis(request: Request, report_id: str):
                 yield {"event": "channel", "data": json.dumps({"index": emitted_channels, "channel": ch})}
                 emitted_channels += 1
                 await asyncio.sleep(0.05)
+
+            # Stream channel reasoning one by one
+            p_channel_reasoning = progress.get("channel_reasoning", [])
+            while emitted_channel_reasoning < len(p_channel_reasoning):
+                r = p_channel_reasoning[emitted_channel_reasoning]
+                yield {"event": "channel_reasoning", "data": json.dumps(r)}
+                emitted_channel_reasoning += 1
+                await asyncio.sleep(0.03)
+
+            # Stream final reasoning once
+            p_final_reasoning = progress.get("final_reasoning", {})
+            if p_final_reasoning and not emitted_final_reasoning:
+                yield {"event": "final_reasoning", "data": json.dumps(p_final_reasoning)}
+                emitted_final_reasoning = True
 
             # Stream channels_meta section when available
             sections = progress.get("sections", {})
@@ -1750,6 +1885,8 @@ async def _real_poll_deep_progress(request: Request, report_id: str):
                 return JSONResponse({
                     "status": "complete",
                     "channels": channel_list,
+                    "channel_reasoning": analysis.get("channel_reasoning", []),
+                    "final_reasoning": analysis.get("final_reasoning", {}),
                     "personas": leads_research.get("personas", []),
                     "leads": leads_research.get("leads", []),
                     "competitors": investor_research.get("competitors", []),
@@ -1825,7 +1962,17 @@ async def _real_poll_deep_progress(request: Request, report_id: str):
 
     # Analysis is running but _deep_progress didn't have data yet (race condition on first poll)
     if is_deep_analysis_running(report_id):
-        return JSONResponse({"status": "Analysis starting...", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
+        return JSONResponse({
+            "status": "Analysis starting...",
+            "sections": {},
+            "channels": [],
+            "channel_reasoning": [],
+            "final_reasoning": {},
+            "leads": [],
+            "investors": [],
+            "competitors": [],
+            "personas": [],
+        })
 
     # If analysis hasn't started and report is still a skeleton, start it.
     # No auth check — the page view already started it, this is a safety net
@@ -1838,11 +1985,31 @@ async def _real_poll_deep_progress(request: Request, report_id: str):
                 if analysis_check.get("_phase") != "complete":
                     logger.info(f"[PROGRESS] Starting deep analysis for {report_id} via polling safety net")
                     asyncio.create_task(run_deep_analysis_background(report_id))
-                    return JSONResponse({"status": "starting", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
+                    return JSONResponse({
+                        "status": "starting",
+                        "sections": {},
+                        "channels": [],
+                        "channel_reasoning": [],
+                        "final_reasoning": {},
+                        "leads": [],
+                        "investors": [],
+                        "competitors": [],
+                        "personas": [],
+                    })
             except Exception:
                 pass
 
-    return JSONResponse({"status": "not_started", "sections": {}, "channels": [], "leads": [], "investors": [], "competitors": [], "personas": []})
+    return JSONResponse({
+        "status": "not_started",
+        "sections": {},
+        "channels": [],
+        "channel_reasoning": [],
+        "final_reasoning": {},
+        "leads": [],
+        "investors": [],
+        "competitors": [],
+        "personas": [],
+    })
 
 
 @app.post("/webhook/stripe")
@@ -2250,6 +2417,30 @@ async def hermes_report_progress(request: Request, report_id: str):
     if not ok:
         return JSONResponse({"error": reason}, status_code=403)
     return await _real_poll_deep_progress(request, report_id)
+
+
+@app.get("/api/hermes/report/{report_id}/telegram-thread")
+async def hermes_report_telegram_thread(request: Request, report_id: str):
+    """Auth-gated Telegram formatter for report progress/reasoning."""
+    ok, reason = _check_hermes_access(request)
+    if not ok:
+        return JSONResponse({"error": reason}, status_code=403)
+
+    try:
+        max_chars_raw = request.query_params.get("max_chars", "1200")
+        try:
+            max_chars = int(max_chars_raw)
+        except Exception:
+            max_chars = 1200
+
+        progress_resp = await _real_poll_deep_progress(request, report_id)
+        progress = json.loads(progress_resp.body.decode("utf-8")) if getattr(progress_resp, "body", None) else {}
+        payload = _format_reasoning_for_telegram(report_id, progress, max_chars=max_chars)
+        payload["source_status"] = progress.get("status", "")
+        return JSONResponse(payload)
+    except Exception as e:
+        logger.error(f"Hermes telegram formatter failed for {report_id}: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/health")

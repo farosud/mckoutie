@@ -1578,9 +1578,11 @@ def _streaming_js():
       if(skel) skel.remove();
     }
 
-    var score = ch.score||0;
-    var color = score>=8?'var(--green)':score>=6?'var(--amber)':'var(--text3)';
-    var pct = score*10;
+    var hasScore = typeof ch.score === 'number' && !isNaN(ch.score);
+    var score = hasScore ? ch.score : null;
+    var color = hasScore ? (score>=8?'var(--green)':score>=6?'var(--amber)':'var(--text3)') : 'var(--text3)';
+    var pct = hasScore ? (score*10) : 0;
+    var scoreLabel = hasScore ? String(score) : '—';
     var chId = 'ch-'+idx;
     var insight = ch.killer_insight||'';
     var firstMove = ch.first_move||'';
@@ -1598,7 +1600,7 @@ def _streaming_js():
     row.innerHTML =
       '<td class="cell-rank">'+(idx+1)+'</td>'+
       '<td class="cell-name">'+escHtml(ch.channel||'')+'</td>'+
-      '<td><div class="score-bar"><span class="score-label" style="color:'+color+'">'+score+'</span>'+
+      '<td><div class="score-bar"><span class="score-label" style="color:'+color+'">'+scoreLabel+'</span>'+
       '<div class="score-track"><div class="score-fill" style="width:0%;background:'+color+'"></div></div></div></td>'+
       '<td class="cell-muted">'+escHtml(ch.effort||'')+'</td>'+
       '<td class="cell-muted">'+escHtml(ch.timeline||'')+'</td>'+
@@ -1678,8 +1680,43 @@ def _streaming_js():
     expandRow.setAttribute('data-deep-ready', '1');
   }
 
+  function maybeUpdateChannelRow(idx, ch){
+    var row = document.querySelector('tr.ch-row[data-target="ch-'+idx+'"]');
+    if(!row || !ch) return;
+    var tds = row.querySelectorAll('td');
+    if(!tds || tds.length < 8) return;
+
+    var hasScore = typeof ch.score === 'number' && !isNaN(ch.score);
+    var score = hasScore ? ch.score : null;
+    var color = hasScore ? (score>=8?'var(--green)':score>=6?'var(--amber)':'var(--text3)') : 'var(--text3)';
+    var pct = hasScore ? (score*10) : 0;
+    var scoreLabel = hasScore ? String(score) : '—';
+
+    var scoreLabelEl = row.querySelector('.score-label');
+    var fillEl = row.querySelector('.score-fill');
+    if(scoreLabelEl){
+      scoreLabelEl.textContent = scoreLabel;
+      scoreLabelEl.style.color = color;
+    }
+    if(fillEl){
+      fillEl.style.background = color;
+      fillEl.style.width = pct + '%';
+    }
+
+    tds[3].textContent = ch.effort || '';
+    tds[4].textContent = ch.timeline || '';
+    tds[5].textContent = ch.budget || '';
+    tds[6].textContent = (ch.killer_insight || '').slice(0,100);
+
+    var firstMove = ch.first_move||'';
+    tds[7].innerHTML = (tier==='starter'||tier==='growth')
+      ? '<span class="cell-muted">'+escHtml(firstMove.slice(0,120))+'</span>'
+      : '<span style="color:var(--text3);font-size:10px">Starter plan</span>';
+  }
+
   function updateKPIs(){
-    var sorted = channels.slice().sort(function(a,b){return(b.score||0)-(a.score||0)});
+    var scored = channels.filter(function(c){ return typeof c.score === 'number' && !isNaN(c.score); });
+    var sorted = scored.slice().sort(function(a,b){return(b.score||0)-(a.score||0)});
     var topScore = sorted.length?sorted[0].score:0;
     var topName = sorted.length?sorted[0].channel:'';
     var avg = sorted.length?Math.round(sorted.reduce(function(s,c){return s+(c.score||0)},0)/sorted.length*10)/10:0;
@@ -1982,6 +2019,7 @@ def _streaming_js():
     for(var ci=0; ci<Math.min(channels.length, pChannels.length); ci++){
       if(pChannels[ci]){
         channels[ci] = pChannels[ci];
+        maybeUpdateChannelRow(ci, pChannels[ci]);
         maybeUpdateChannelAccordion(ci, pChannels[ci]);
       }
     }
